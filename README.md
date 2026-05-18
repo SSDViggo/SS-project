@@ -1,4 +1,4 @@
-# Lab09 example
+# Lab08 example
 Since the Firestore backend isn't set up yet. 
 
 This project can't be built and run.  
