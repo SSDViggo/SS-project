@@ -25,7 +25,7 @@ class _GridPainter extends CustomPainter {
       ..strokeWidth = 1.0;
       
 
-    double stepX = size.width / 3;
+    double stepX = size.width / 3 ;
     double stepY = size.height / 3;
 
     for (int i = 1; i < 3; i++) {
