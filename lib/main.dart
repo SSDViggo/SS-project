@@ -1,12 +1,22 @@
 import 'package:flutter/material.dart';
+<<<<<<< HEAD
 
 import 'pages/camera_scene.dart';
+=======
+import 'package:provider/provider.dart';
+import 'providers/camera_provider.dart';
+import 'screens/home_screen.dart';
+import 'screens/camera_screen.dart';
+import 'screens/edit_screen.dart';
+import 'screens/library_screen.dart';
+>>>>>>> d29951fdd557e821f178970c923b50fbb798741a
 
 void main() {
   runApp(const MyApp());
 }
 
 class MyApp extends StatelessWidget {
+<<<<<<< HEAD
   const MyApp({super.key});
 
   @override
@@ -23,10 +33,41 @@ class MyApp extends StatelessWidget {
         ),
       ),
       home: const PhotoAssistantScreen(),
+=======
+  const MyApp({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => CameraProvider()),
+      ],
+      child: MaterialApp(
+        title: 'AI Photo Assistant',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          scaffoldBackgroundColor: const Color(0xFF1a1a1a),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFF1a1a1a),
+            elevation: 0,
+            centerTitle: true,
+          ),
+          bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+            backgroundColor: Color(0xFF2a2a2a),
+            selectedItemColor: Color(0xFF0066FF),
+            unselectedItemColor: Color(0xFF888888),
+          ),
+        ),
+        home: const MainApp(),
+      ),
+>>>>>>> d29951fdd557e821f178970c923b50fbb798741a
     );
   }
 }
 
+<<<<<<< HEAD
 class PhotoAssistantScreen extends StatelessWidget {
   const PhotoAssistantScreen({super.key});
 
@@ -37,10 +78,29 @@ class PhotoAssistantScreen extends StatelessWidget {
       ),
     );
   }
+=======
+class MainApp extends StatefulWidget {
+  const MainApp({Key? key}) : super(key: key);
+
+  @override
+  State<MainApp> createState() => _MainAppState();
+}
+
+class _MainAppState extends State<MainApp> {
+  int _selectedIndex = 0;
+
+  final List<Widget> _screens = [
+    const HomeScreen(),
+    const CameraScreen(),
+    const LibraryScreen(),
+    const EditScreen(),
+  ];
+>>>>>>> d29951fdd557e821f178970c923b50fbb798741a
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+<<<<<<< HEAD
       appBar: AppBar(
         title: const Text(
           'AI Photo Assistant',
@@ -126,11 +186,39 @@ class PhotoAssistantScreen extends StatelessWidget {
           BottomNavigationBarItem(
             icon: Icon(Icons.auto_awesome),
             label: 'Edit',
+=======
+      body: _screens[_selectedIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
+        currentIndex: _selectedIndex,
+        onTap: (index) {
+          setState(() {
+            _selectedIndex = index;
+          });
+        },
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            label: '首頁',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.camera_alt),
+            label: '相機',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.photo_library),
+            label: '圖庫',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.tune),
+            label: '編輯',
+>>>>>>> d29951fdd557e821f178970c923b50fbb798741a
           ),
         ],
       ),
     );
   }
+<<<<<<< HEAD
 }
 
 /// 自訂的選項卡片 Widget
@@ -209,4 +297,6 @@ class FeatureCard extends StatelessWidget {
       ),
     );
   }
+=======
+>>>>>>> d29951fdd557e821f178970c923b50fbb798741a
 }
