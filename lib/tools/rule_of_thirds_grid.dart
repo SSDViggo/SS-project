@@ -23,6 +23,7 @@ class _GridPainter extends CustomPainter {
     final paint = Paint()
       ..color = Colors.white.withOpacity(0.3)
       ..strokeWidth = 1.0;
+      
 
     double stepX = size.width / 3;
     double stepY = size.height / 3;
