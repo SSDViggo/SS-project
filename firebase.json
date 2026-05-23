@@ -1,5 +1,7 @@
 {
   "firestore": {
+    "database": "(default)",
+    "location": "asia-east1",
     "rules": "firestore/firestore.rules",
     "indexes": "firestore/firestore.indexes.json"
   },
@@ -14,5 +16,17 @@
         "firebase-debug.*.log"
       ]
     }
-  ]
+  ],
+  "flutter": {
+    "platforms": {
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "todoist-72a29",
+          "configurations": {
+            "web": "1:501164139177:web:51ce935bfa8fce99ea7fb8"
+          }
+        }
+      }
+    }
+  }
 }
