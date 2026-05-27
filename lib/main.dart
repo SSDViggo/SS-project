@@ -1,8 +1,24 @@
+import 'dart:io'; // 需要用來判斷 Platform
+import 'package:camera/camera.dart'; // 導入 camera 套件
 import 'package:flutter/material.dart';
 
 import 'pages/camera_scene.dart';
 
-void main() {
+// 1. 宣告全域變數來儲存設備上可用的相機列表
+List<CameraDescription> cameras = [];
+
+// 2. 將 main 函式改為 async
+Future<void> main() async {
+  // 確保 Flutter 引擎與底層綁定完成
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // 取得設備上所有可用的相機
+  try {
+    cameras = await availableCameras();
+  } catch (e) {
+    debugPrint('取得相機失敗: $e');
+  }
+
   runApp(const MyApp());
 }
 
@@ -14,7 +30,6 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'AI Photo Assistant',
       debugShowCheckedModeBanner: false,
-      // 設定全域為深色主題
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF121212),
         appBarTheme: const AppBarTheme(
@@ -27,13 +42,56 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class PhotoAssistantScreen extends StatelessWidget {
+// 3. 將原本的 StatelessWidget 改為 StatefulWidget 以管理 CameraController 的生命週期
+class PhotoAssistantScreen extends StatefulWidget {
   const PhotoAssistantScreen({super.key});
 
+  @override
+  State<PhotoAssistantScreen> createState() => _PhotoAssistantScreenState();
+}
+
+class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
+  CameraController? _cameraController;
+
+  @override
+  void initState() {
+    super.initState();
+    _initCamera(); // 進入首頁時就在背景預先初始化相機
+  }
+
+  // 4. 初始化 CameraController 的邏輯
+  Future<void> _initCamera() async {
+    if (cameras.isEmpty) return;
+
+    // 選擇 cameras[0] (通常是後置鏡頭)
+    _cameraController = CameraController(
+      cameras[0],
+      ResolutionPreset.medium, // 偵測用不需要太高畫質，避免過熱與延遲
+      // 確保 Android 使用 nv21 格式以相容 Google ML Kit
+      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+    );
+
+    try {
+      await _cameraController!.initialize();
+    } catch (e) {
+      debugPrint('相機初始化失敗: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    // 退出 App 時釋放相機資源
+    _cameraController?.dispose();
+    super.dispose();
+  }
+
   void _openCamera(BuildContext context) {
+    // 5. 將初始化完成的 _cameraController 傳遞給相機頁面
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => const FullScreenCameraScreen(),
+        builder: (context) => FullScreenCameraScreen(
+          cameraController: _cameraController, 
+        ),
       ),
     );
   }
@@ -54,17 +112,15 @@ class PhotoAssistantScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 16),
-            // 頂部說明文字
             const Text(
               'Your intelligent photography companion for perfect composition and professional editing',
               style: TextStyle(
-                color: Color(0xFF8B9CB6), // 偏藍灰色的字體
+                color: Color(0xFF8B9CB6),
                 fontSize: 15,
                 height: 1.4,
               ),
             ),
             const SizedBox(height: 24),
-            // 卡片列表區域
             Expanded(
               child: ListView(
                 physics: const BouncingScrollPhysics(),
@@ -73,34 +129,33 @@ class PhotoAssistantScreen extends StatelessWidget {
                     icon: Icons.camera_alt_outlined,
                     title: 'Smart Camera',
                     description: 'Real-time AI guidance with composition grids and level detection',
-                    isPrimary: true, // 藍色主視角卡片
+                    isPrimary: true,
                     onTap: () => _openCamera(context),
                   ),
                   const SizedBox(height: 16),
-                  FeatureCard(
+                  const FeatureCard(
                     icon: Icons.auto_awesome,
                     title: 'AI Enhancements',
                     description: 'Intelligent post-processing suggestions and manual controls',
-                    isPrimary: false, // 深色背景卡片
-                  ),
-                  const SizedBox(height: 16),
-                  FeatureCard(
-                    icon: Icons.grid_view_rounded,
-                    title: 'Composition Library',
-                    description: '', // 畫面底部被截斷，假設沒有或後續補充
                     isPrimary: false,
                   ),
-                  const SizedBox(height: 20), // 底部留白
+                  const SizedBox(height: 16),
+                  const FeatureCard(
+                    icon: Icons.grid_view_rounded,
+                    title: 'Composition Library',
+                    description: '', 
+                    isPrimary: false,
+                  ),
+                  const SizedBox(height: 20),
                 ],
               ),
             ),
           ],
         ),
       ),
-      // 底部導覽列
       bottomNavigationBar: BottomNavigationBar(
         backgroundColor: const Color(0xFF121212),
-        selectedItemColor: const Color(0xFF0A58F5), // 選中的藍色
+        selectedItemColor: const Color(0xFF0A58F5),
         unselectedItemColor: Colors.grey,
         showUnselectedLabels: true,
         type: BottomNavigationBarType.fixed,
@@ -133,7 +188,7 @@ class PhotoAssistantScreen extends StatelessWidget {
   }
 }
 
-/// 自訂的選項卡片 Widget
+/// 自訂的選項卡片 Widget (保持不變，為符合 const 規範加上 const)
 class FeatureCard extends StatelessWidget {
   final IconData icon;
   final String title;

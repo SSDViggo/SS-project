@@ -1,17 +1,23 @@
 import 'dart:convert';
-import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
 import 'dart:io';
+
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // 為了 rootBundle
 import 'package:path_provider/path_provider.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
 
-// 匯入工具檔案
+// 工具模組：網格、AI 引導 overlay、以及物件偵測服務
 import '../tools/rule_of_thirds_grid.dart';
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
 
+/// 相機畫面（全螢幕）
+///
+/// - 顯示相機預覽或測試圖片
+/// - 支援即時物件偵測與 AI 構圖建議 overlay
 class FullScreenCameraScreen extends StatefulWidget {
+  /// 傳入的相機控制器（由呼叫端建立並初始化）
   final CameraController? cameraController;
 
   const FullScreenCameraScreen({super.key, this.cameraController});
@@ -27,7 +33,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   
   double _subjectX = 0.5;
   double _subjectY = 0.5;
-  final double _bestX = 0.66;
+  final double _bestX = 0.9;
   final double _bestY = 0.66;
 
   final ObjectDetectorService _detectorService = ObjectDetectorService();
@@ -35,7 +41,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   @override
   void initState() {
     super.initState();
-    // 初始化 Detector
+    // 初始化物件偵測 Service。如果需要可在此傳入模型或設定
     _detectorService.initialize();
   }
 
@@ -48,14 +54,13 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   void _toggleLiveDetection() async {
     if (widget.cameraController == null || !widget.cameraController!.value.isInitialized) return;
-
-    setState(() {
-      _hasGuidance = !_hasGuidance;
-    });
+    // 切換是否要顯示引導（同時啟/停相機影格串流）
+    setState(() => _hasGuidance = !_hasGuidance);
 
     if (_hasGuidance) {
+      // 啟動影格串流，回呼中只保留一個處理序列，避免重入
       await widget.cameraController!.startImageStream((CameraImage image) {
-        if (_isProcessing) return; 
+        if (_isProcessing) return;
         _processCameraImage(image);
       });
     } else {
@@ -65,16 +70,15 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   Future<void> _processCameraImage(CameraImage image) async {
     _isProcessing = true;
-
     try {
-      // 直接呼叫 Service，把複雜的邏輯封裝在底層
+      // 將影格交由 Service 處理，Service 回傳主體的相對座標 (0..1)
       final resultOffset = await _detectorService.detectMainSubject(
         image: image,
         camera: widget.cameraController!.description,
         deviceOrientation: MediaQuery.of(context).orientation,
       );
 
-      // 如果有抓到 Subject 的 Bounding Box，就更新 UI 狀態
+      // 若有偵測到主體，更新對應的座標值供 overlay 使用
       if (resultOffset != null) {
         setState(() {
           _subjectX = resultOffset.dx;
@@ -96,34 +100,39 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     });
 
     try {
-      // 1. 從 Asset 讀取圖片，並寫入手機暫存區 (為了取得真實路徑)
       final byteData = await rootBundle.load('test_images/food1.jpg');
       final tempDir = await getTemporaryDirectory();
       final tempFile = File('${tempDir.path}/food1_test.jpg');
       await tempFile.writeAsBytes(byteData.buffer.asUint8List());
 
-      // 2. 取得圖片的真實寬高 (為了解析相對座標)
       final decodedImage = await decodeImageFromList(await tempFile.readAsBytes());
       final imgWidth = decodedImage.width.toDouble();
       final imgHeight = decodedImage.height.toDouble();
 
-      // 3. 呼叫 Service 分析這張靜態圖片
       final resultOffset = await _detectorService.detectFromFilePath(
         filePath: tempFile.path,
         imgWidth: imgWidth,
         imgHeight: imgHeight,
       );
 
-      // 4. 更新 UI，將畫面從相機切換成測試圖片，並標示出座標
       setState(() {
-        _testImageFile = tempFile; // 設定這張圖後，畫面會切換
+        _testImageFile = tempFile; 
         if (resultOffset != null) {
           _subjectX = resultOffset.dx;
           _subjectY = resultOffset.dy;
           _hasGuidance = true;
+          
+          // 加入成功提示
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Object Detected! 成功抓到主體'), backgroundColor: Colors.green),
+          );
         } else {
-          // 如果沒辨識到主體，關閉引導
           _hasGuidance = false;
+          
+          // 加入失敗提示
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('ML Kit 未偵測到明確主體'), backgroundColor: Colors.red),
+          );
         }
       });
     } catch (e) {
@@ -133,8 +142,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         _isProcessing = false;
       });
     }
-  }
-  // end test single image
+  }// end test single image
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
@@ -146,15 +154,17 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1. 底層：若有測試圖片就顯示圖片，否則顯示相機
+          // 1) 底層：測試圖片優先，否則顯示相機預覽
           if (_testImageFile != null)
             Image.file(_testImageFile!, fit: BoxFit.cover)
           else if (widget.cameraController != null && widget.cameraController!.value.isInitialized)
             CameraPreview(widget.cameraController!)
           else
-            const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
+            const Center(
+              child: Text('Camera Preview', style: TextStyle(color: Colors.white54)),
+            ),
 
-          // 2. 網格與 AI 標籤 (這部分不用動，因為它吃的是正規化座標)
+          // 2) 構圖網格與 AI 引導 overlay（使用正規化座標）
           RuleOfThirdsGrid(isVisible: _hasGuidance),
           AIGuidanceOverlay(
             isVisible: _hasGuidance,
@@ -162,7 +172,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
             bestPosition: aiBestPos,
           ),
 
-          // 3. UI 介面
+          // 3) 主要 UI：頂部列 + 底部控制列
           SafeArea(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -185,7 +195,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           unselectedItemColor: Colors.grey,
           showUnselectedLabels: true,
           type: BottomNavigationBarType.fixed,
-          currentIndex: 1, 
+          currentIndex: 1,
           items: const [
             BottomNavigationBarItem(icon: Icon(Icons.home_outlined), label: 'Home'),
             BottomNavigationBarItem(icon: Icon(Icons.camera_alt), label: 'Camera'),
@@ -194,7 +204,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           ],
         ),
       ),
-    
     );
   }
   Widget _buildTopBar(BuildContext context) {
