@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui; // 用於處理 Image
+import 'package:flutter/rendering.dart'; // 為了使用 RenderRepaintBoundary
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -31,6 +33,11 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   bool _hasGuidance = false;
   bool _isProcessing = false; 
   
+  final GlobalKey _previewKey = GlobalKey(); 
+  
+  // 建立 Gemini Model (請替換為你的 API Key)
+  late final GenerativeModel _geminiModel;
+
   double _subjectX = 0.5;
   double _subjectY = 0.5;
   final double _bestX = 0.9;
@@ -43,6 +50,10 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     super.initState();
     // 初始化物件偵測 Service。如果需要可在此傳入模型或設定
     _detectorService.initialize();
+    _geminiModel = GenerativeModel(
+      model: 'gemini-1.5-flash',
+      apiKey: 'YOUR_GEMINI_API_KEY', // 記得換成真實的 API Key
+    );
   }
 
   @override
@@ -68,6 +79,63 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     }
   }
 
+  Future<void> _captureAndAskGemini() async {
+    if (_isProcessing) return;
+    
+    setState(() => _isProcessing = true);
+    
+    try {
+      // 1. 透過 RepaintBoundary 取得當前畫面的截圖
+      final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return;
+
+      // pixelRatio 設為 2.0 可以獲得相對清晰的圖片，不用設太高以免 API 傳輸過慢
+      final ui.Image image = await boundary.toImage(pixelRatio: 2.0); 
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      final Uint8List pngBytes = byteData!.buffer.asUint8List();
+
+      // 2. 構建 Gemini Prompt (Visual Prompting)
+      // ⭐️ 關鍵：在 Prompt 中明確告訴 AI 你的 UI 標記代表什麼意思
+      final prompt = TextPart(
+        '你是一位專業的攝影助理。這是一張相機預覽畫面。'
+        '畫面中的「黃色圈圈與標籤」代表我目前對焦的主體。'
+        '請根據目前的光線、背景雜亂度，以及三分法則，給我3個簡短的拍攝改善建議（例如移動相機角度、改變主體位置等）。'
+      );
+      final imagePart = DataPart('image/png', pngBytes);
+
+      // 加入 Loading 提示
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('AI 分析構圖中...')),
+      );
+
+      // 3. 呼叫 API
+      final response = await _geminiModel.generateContent([
+        Content.multi([prompt, imagePart])
+      ]);
+
+      // 4. 顯示結果 (可以使用 Dialog 或 BottomSheet)
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('AI 攝影建議'),
+          content: Text(response.text ?? '無法取得建議'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('確定'),
+            )
+          ],
+        ),
+      );
+
+    } catch (e) {
+      debugPrint('Gemini API Error: $e');
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+  
   Future<void> _processCameraImage(CameraImage image) async {
     _isProcessing = true;
     try {
@@ -144,7 +212,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     }
   }// end test single image
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) {  
     final screenSize = MediaQuery.of(context).size;
     final aiBestPos = Offset(screenSize.width * _bestX, screenSize.height * _bestY);
     final aiSubjectPos = Offset(screenSize.width * _subjectX, screenSize.height * _subjectY);
@@ -154,25 +222,30 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1) 底層：測試圖片優先，否則顯示相機預覽
-          if (_testImageFile != null)
-            Image.file(_testImageFile!, fit: BoxFit.cover)
-          else if (widget.cameraController != null && widget.cameraController!.value.isInitialized)
-            CameraPreview(widget.cameraController!)
-          else
-            const Center(
-              child: Text('Camera Preview', style: TextStyle(color: Colors.white54)),
+          // ⭐️ 將底圖、網格與 AI Overlay 用 RepaintBoundary 包裝
+          RepaintBoundary(
+            key: _previewKey,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_testImageFile != null)
+                  Image.file(_testImageFile!, fit: BoxFit.cover)
+                else if (widget.cameraController != null && widget.cameraController!.value.isInitialized)
+                  CameraPreview(widget.cameraController!)
+                else
+                  const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
+                
+                RuleOfThirdsGrid(isVisible: _hasGuidance),
+                AIGuidanceOverlay(
+                  isVisible: _hasGuidance,
+                  subjectPosition: aiSubjectPos,
+                  bestPosition: aiBestPos,
+                ),
+              ],
             ),
-
-          // 2) 構圖網格與 AI 引導 overlay（使用正規化座標）
-          RuleOfThirdsGrid(isVisible: _hasGuidance),
-          AIGuidanceOverlay(
-            isVisible: _hasGuidance,
-            subjectPosition: aiSubjectPos,
-            bestPosition: aiBestPos,
           ),
 
-          // 3) 主要 UI：頂部列 + 底部控制列
+          // 3) 主要 UI：頂部列 + 底部控制列 (這些不需要被截圖送給 API)
           SafeArea(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -218,6 +291,20 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           ),
           Row(
             children: [
+              // ⭐️ 將原本在右下角的「物件偵測開關」移到頂部
+              IconButton(
+                icon: Icon(
+                  Icons.center_focus_strong,
+                  color: _hasGuidance && _testImageFile == null ? const Color(0xFF0A58F5) : Colors.white,
+                ),
+                onPressed: () {
+                  if (_testImageFile != null) {
+                    setState(() => _testImageFile = null);
+                  }
+                  _toggleLiveDetection();
+                },
+              ),
+              // 原本的閃光燈與翻轉鏡頭按鈕
               IconButton(
                 icon: const Icon(Icons.flash_off, color: Colors.white),
                 onPressed: () {},
@@ -260,17 +347,13 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           
           // 右下角：原本的相機即時偵測開關
           IconButton(
-            icon: Icon(
-              Icons.center_focus_strong,
-              color: _hasGuidance && _testImageFile == null ? const Color(0xFF0A58F5) : Colors.white,
-            ),
-            onPressed: () {
-              // 若處於測試圖片模式，先清除圖片退回相機畫面
-              if (_testImageFile != null) {
-                setState(() => _testImageFile = null);
-              }
-              _toggleLiveDetection();
-            },
+            icon: _isProcessing 
+                ? const SizedBox(
+                    width: 24, height: 24,
+                    child: CircularProgressIndicator(color: Color(0xFF0A58F5), strokeWidth: 2.0),
+                  )
+                : const Icon(Icons.auto_awesome, color: Colors.white, size: 28), // AI 閃亮圖示
+            onPressed: _captureAndAskGemini, // ⭐️ 綁定到這裡
           ),
         ],
       ),
