@@ -3,7 +3,7 @@ import 'package:camera/camera.dart'; // 導入 camera 套件
 import 'package:flutter/material.dart';
 
 import 'pages/camera_scene.dart';
-
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 // 1. 宣告全域變數來儲存設備上可用的相機列表
 List<CameraDescription> cameras = [];
 
@@ -11,7 +11,7 @@ List<CameraDescription> cameras = [];
 Future<void> main() async {
   // 確保 Flutter 引擎與底層綁定完成
   WidgetsFlutterBinding.ensureInitialized();
-  
+  await dotenv.load(fileName: ".env");
   // 取得設備上所有可用的相機
   try {
     cameras = await availableCameras();

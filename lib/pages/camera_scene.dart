@@ -10,10 +10,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 
 // 工具模組：網格、AI 引導 overlay、以及物件偵測服務
-import '../tools/rule_of_thirds_grid.dart';
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
-
+import '../tools/composition_overlay_manager.dart'; 
+import '../tools/camera_settings_service.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 /// 相機畫面（全螢幕）
 ///
 /// - 顯示相機預覽或測試圖片
@@ -32,7 +33,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   File? _testImageFile;
   bool _hasGuidance = false;
   bool _isProcessing = false; 
-  
+  String _currentComposition = 'none'; // 預設不顯示特定幾何網格
+  final CameraSettingsService _cameraSettingsService = CameraSettingsService();
+
   final GlobalKey _previewKey = GlobalKey(); 
   
   // 建立 Gemini Model (請替換為你的 API Key)
@@ -40,8 +43,8 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   double _subjectX = 0.5;
   double _subjectY = 0.5;
-  final double _bestX = 0.9;
-  final double _bestY = 0.66;
+  double _bestX = 0.9;
+  double _bestY = 0.66;
 
   final ObjectDetectorService _detectorService = ObjectDetectorService();
 
@@ -50,9 +53,13 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     super.initState();
     // 初始化物件偵測 Service。如果需要可在此傳入模型或設定
     _detectorService.initialize();
+    final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
+    if (apiKey.isEmpty) {
+      debugPrint('警告：找不到 API Key，請檢查 .env 檔案設定。');
+    }
     _geminiModel = GenerativeModel(
-      model: 'gemini-1.5-flash',
-      apiKey: 'YOUR_GEMINI_API_KEY', // 記得換成真實的 API Key
+      model: 'gemini-2.5-flash-lite',
+      apiKey: apiKey, // 記得換成真實的 API Key
     );
   }
 
@@ -89,21 +96,36 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) return;
 
-      // pixelRatio 設為 2.0 可以獲得相對清晰的圖片，不用設太高以免 API 傳輸過慢
       final ui.Image image = await boundary.toImage(pixelRatio: 2.0); 
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       final Uint8List pngBytes = byteData!.buffer.asUint8List();
 
-      // 2. 構建 Gemini Prompt (Visual Prompting)
-      // ⭐️ 關鍵：在 Prompt 中明確告訴 AI 你的 UI 標記代表什麼意思
-      final prompt = TextPart(
-        '你是一位專業的攝影助理。這是一張相機預覽畫面。'
-        '畫面中的「黃色圈圈與標籤」代表我目前對焦的主體。'
-        '請根據目前的光線、背景雜亂度，以及三分法則，給我3個簡短的拍攝改善建議（例如移動相機角度、改變主體位置等）。'
-      );
+      // 2. 構建 Gemini Prompt
+      final prompt = TextPart('''
+        You are a professional photography assistant. 
+        Look at the attached camera preview image. The user's intended main subject is highlighted with a yellow marker.
+
+        Please perform the following tasks:
+        1. Identify the main subject.
+        2. Analyze the scene to choose the BEST composition technique.
+        3. Determine the ideal coordinates (x, y) for the subject (0.0 to 1.0).
+        4. Decide if the exposure needs adjustment (-2.0 to 2.0) or if the flash is needed based on the lighting.
+
+        You MUST respond ONLY with a valid JSON object:
+        {
+          "detected_subject": "string",
+          "composition_technique": "string (in Traditional Chinese)",
+          "patternType": "string (MUST be one of: 'rule_of_thirds', 's_curve', 'triangle', 'symmetry', 'none')",
+          "ideal_x": float (0.0 to 1.0),
+          "ideal_y": float (0.0 to 1.0),
+          "actionable_tip": "string (in Traditional Chinese)",
+          "ev_offset": float (-2.0 to 2.0),
+          "flash_on": boolean,
+          "scene_mode": "string (e.g., 夜景模式, 逆光人像, 晴天風景)"
+        }
+      ''');
       final imagePart = DataPart('image/png', pngBytes);
 
-      // 加入 Loading 提示
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('AI 分析構圖中...')),
       );
@@ -113,29 +135,78 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         Content.multi([prompt, imagePart])
       ]);
 
-      // 4. 顯示結果 (可以使用 Dialog 或 BottomSheet)
       if (!mounted) return;
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('AI 攝影建議'),
-          content: Text(response.text ?? '無法取得建議'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('確定'),
-            )
-          ],
-        ),
-      );
+      
+      String responseText = response.text?.trim() ?? '';
+      
+      try {
+        // ⭐️ 防呆：清除 Gemini 可能回傳的 markdown json 標記
+        responseText = responseText.replaceAll('```json', '').replaceAll('```', '').trim();
+        
+        // 解析 JSON
+        final data = jsonDecode(responseText);
+        
+        final technique = data['composition_technique'];
+        final tip = data['actionable_tip'];
+        final double newBestX = data['ideal_x'].toDouble();
+        final double newBestY = data['ideal_y'].toDouble();
+        
+        // 抓取新的工具參數
+        final String newPattern = data['patternType'] ?? 'none';
+        final double evOffset = (data['ev_offset'] ?? 0.0).toDouble();
+        final bool flashOn = data['flash_on'] ?? false;
+        final String sceneMode = data['scene_mode'] ?? '一般模式';
+
+        // 成功解析後，更新 UI 狀態
+        setState(() {
+          _bestX = newBestX; 
+          _bestY = newBestY;
+          _currentComposition = newPattern; // 觸發網格 UI 重新繪製
+        });
+        
+        // 套用相機硬體設定
+        await _cameraSettingsService.applyAISettings(
+          controller: widget.cameraController,
+          evOffset: evOffset,
+          flashOn: flashOn,
+          sceneMode: sceneMode,
+          context: context,
+        );
+
+        // 顯示 AI 建議對話框
+        if (mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text('推薦構圖：$technique'),
+              content: Text(tip),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('套用'),
+                )
+              ],
+            ),
+          );
+        }
+
+      } catch (e) {
+        debugPrint('JSON Parsing Error: $e');
+        debugPrint('Raw AI Response: $responseText');
+        ScaffoldMessenger.of(context).showSnackBar(
+           const SnackBar(content: Text('AI 分析失敗，請再試一次')),
+        );
+      }
 
     } catch (e) {
       debugPrint('Gemini API Error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+         const SnackBar(content: Text('連線錯誤，請檢查網路狀態')),
+      );
     } finally {
       setState(() => _isProcessing = false);
     }
   }
-  
   Future<void> _processCameraImage(CameraImage image) async {
     _isProcessing = true;
     try {
@@ -235,7 +306,11 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                 else
                   const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
                 
-                RuleOfThirdsGrid(isVisible: _hasGuidance),
+                CompositionOverlayManager(
+                  isVisible: _hasGuidance,
+                  patternType: _currentComposition,
+                ),
+                
                 AIGuidanceOverlay(
                   isVisible: _hasGuidance,
                   subjectPosition: aiSubjectPos,
