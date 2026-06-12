@@ -70,8 +70,17 @@ flutter:
   # the material Icons class.
   uses-material-design: true
   assets:
+    - assets/.env
     - test_images/
-    - .env
+    - assets/library/portrait/framing.jpg
+    - assets/library/portrait/negative space.jpg
+    - assets/library/portrait/portrait-rule of third.jpg
+    - assets/library/food/Food flat lay.jpg
+    - assets/library/food/Centered food photography.jpg
+    - assets/library/food/Diagonal food photography.jpg
+    - assets/library/landscape/guide method.jpg
+    - assets/library/landscape/landscape-rule of third.jpg
+    - assets/library/landscape/symmetry.jpg
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

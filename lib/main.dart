@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import 'pages/camera_scene.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'screens/composition_library_screen.dart';
+
 // 1. 宣告全域變數來儲存設備上可用的相機列表
 List<CameraDescription> cameras = [];
 
@@ -11,12 +13,22 @@ List<CameraDescription> cameras = [];
 Future<void> main() async {
   // 確保 Flutter 引擎與底層綁定完成
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: ".env");
+
+  // 1. 修改路徑並加上 try-catch 防禦，避免沒讀到就讓整個 App 死機
+  try {
+    // 💡 注意：這裡的路徑必須跟你在 pubspec.yaml 裡寫的一模一樣
+    await dotenv.load(fileName: "assets/.env");
+    debugPrint('✅ .env 環境變數載入成功');
+  } catch (e) {
+    debugPrint('❌ .env 載入失敗: $e');
+  }
+
   // 取得設備上所有可用的相機
   try {
     cameras = await availableCameras();
+    debugPrint('📸 成功取得相機列表');
   } catch (e) {
-    debugPrint('取得相機失敗: $e');
+    debugPrint('❌ 取得相機失敗: $e');
   }
 
   runApp(const MyApp());
@@ -140,11 +152,18 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
                     isPrimary: false,
                   ),
                   const SizedBox(height: 16),
-                  const FeatureCard(
+                  FeatureCard(
                     icon: Icons.grid_view_rounded,
                     title: 'Composition Library',
-                    description: '', 
+                    description: 'Learn composition techniques and visual guides',
                     isPrimary: false,
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (context) => const CompositionLibraryScreen(),
+                        ),
+                      );
+                    },
                   ),
                   const SizedBox(height: 20),
                 ],
@@ -163,6 +182,12 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
         onTap: (index) {
           if (index == 1) {
             _openCamera(context);
+          } else if (index == 2) {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (context) => const CompositionLibraryScreen(),
+              ),
+            );
           }
         },
         items: const [
