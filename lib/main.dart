@@ -1,9 +1,11 @@
-import 'dart:io'; // 需要用來判斷 Platform
 import 'package:camera/camera.dart'; // 導入 camera 套件
 import 'package:flutter/material.dart';
 
 import 'pages/camera_scene.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:provider/provider.dart';
+import 'providers/camera_provider.dart';
+import 'screens/library_screen.dart';
 // 1. 宣告全域變數來儲存設備上可用的相機列表
 List<CameraDescription> cameras = [];
 
@@ -27,17 +29,20 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'AI Photo Assistant',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF121212),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF121212),
-          elevation: 0,
+    return ChangeNotifierProvider(
+      create: (_) => CameraProvider(),
+      child: MaterialApp(
+        title: 'AI Photo Assistant',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData.dark().copyWith(
+          scaffoldBackgroundColor: const Color(0xFF121212),
+          appBarTheme: const AppBarTheme(
+            backgroundColor: Color(0xFF121212),
+            elevation: 0,
+          ),
         ),
+        home: const PhotoAssistantScreen(),
       ),
-      home: const PhotoAssistantScreen(),
     );
   }
 }
@@ -51,47 +56,15 @@ class PhotoAssistantScreen extends StatefulWidget {
 }
 
 class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
-  CameraController? _cameraController;
-
-  @override
-  void initState() {
-    super.initState();
-    _initCamera(); // 進入首頁時就在背景預先初始化相機
-  }
-
-  // 4. 初始化 CameraController 的邏輯
-  Future<void> _initCamera() async {
-    if (cameras.isEmpty) return;
-
-    // 選擇 cameras[0] (通常是後置鏡頭)
-    _cameraController = CameraController(
-      cameras[0],
-      ResolutionPreset.medium, // 偵測用不需要太高畫質，避免過熱與延遲
-      // 確保 Android 使用 nv21 格式以相容 Google ML Kit
-      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
-    );
-
-    try {
-      await _cameraController!.initialize();
-    } catch (e) {
-      debugPrint('相機初始化失敗: $e');
-    }
-  }
-
-  @override
-  void dispose() {
-    // 退出 App 時釋放相機資源
-    _cameraController?.dispose();
-    super.dispose();
-  }
+  // 不再於首頁預先建立/持有CameraController。
+  // 改由FullScreenCameraScreen自行建立、自行銷毀，避免兩個畫面搶同一個controller的所有權，
+  // 也避免「翻轉鏡頭後產生的新controller」與「首頁手上的舊controller」不一致的問題。
 
   void _openCamera(BuildContext context) {
-    // 5. 將初始化完成的 _cameraController 傳遞給相機頁面
+    // 5. 進入相機頁面，相機頁面會自己建立並管理CameraController
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (context) => FullScreenCameraScreen(
-          cameraController: _cameraController, 
-        ),
+        builder: (context) => const FullScreenCameraScreen(),
       ),
     );
   }
@@ -163,6 +136,12 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
         onTap: (index) {
           if (index == 1) {
             _openCamera(context);
+          } else if (index == 2) {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (context) => const LibraryScreen(),
+              ),
+            );
           }
         },
         items: const [
@@ -188,7 +167,6 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
   }
 }
 
-/// 自訂的選項卡片 Widget (保持不變，為符合 const 規範加上 const)
 class FeatureCard extends StatelessWidget {
   final IconData icon;
   final String title;
