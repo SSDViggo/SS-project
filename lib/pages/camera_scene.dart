@@ -65,7 +65,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   @override
   void dispose() {
-    widget.cameraController?.stopImageStream();
+    if (widget.cameraController?.value.isStreamingImages == true) {
+      widget.cameraController?.stopImageStream();
+    }
     _detectorService.dispose();
     super.dispose();
   }
@@ -82,7 +84,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         _processCameraImage(image);
       });
     } else {
-      await widget.cameraController!.stopImageStream();
+      if (widget.cameraController!.value.isStreamingImages) {
+        await widget.cameraController!.stopImageStream();
+      }
     }
   }
 
