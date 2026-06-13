@@ -1,15 +1,12 @@
 import 'dart:io';
 import 'dart:ui' as ui;
+import 'dart:typed_data';
 import 'package:flutter/rendering.dart';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:image_gallery_saver/image_gallery_saver.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
@@ -18,7 +15,7 @@ import '../tools/camera_settings_service.dart';
 import '../tools/gemini_composition_service.dart';
 import '../providers/camera_provider.dart';
 import '../main.dart' show cameras;
-
+import 'package:gal/gal.dart';
 enum CameraWorkflow {
   live,
   analyzing,
@@ -58,10 +55,11 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   bool _isCameraInitializing = true;
 
   Future<void> _startTrackingStream() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
-    if (_cameraController!.value.isStreamingImages) return;
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (controller.value.isStreamingImages) return;
 
-    await _cameraController!.startImageStream((image) {
+    await controller.startImageStream((image) {
       if (!_isProcessing) {
         _processCameraImage(image);
       }
@@ -69,8 +67,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   }
 
   Future<void> _stopTrackingStream() async {
-    if (_cameraController?.value.isStreamingImages == true) {
-      await _cameraController!.stopImageStream();
+    final controller = _controller;
+    if (controller?.value.isStreamingImages == true) {
+      await controller!.stopImageStream();
     }
   }
 
@@ -93,12 +92,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       return;
     }
 
-    final backCamera = cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => cameras.first,
-    );
-
-    _initializeCameraFuture = _initializeCamera();
+    await _initializeCamera();
   }
 
   Future<void> _initializeCamera() async {
@@ -152,20 +146,29 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       return;
     }
 
+    final wasStreaming = _controller?.value.isStreamingImages == true;
     setState(() {
       _isProcessing = true;
       _workflow = CameraWorkflow.analyzing;
     });
 
+    if (wasStreaming) {
+      await _stopTrackingStream();
+    }
     await _controller?.pausePreview();
 
     try {
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-      if (boundary == null) return;
+      if (boundary == null) {
+        throw StateError('無法取得預覽畫面，請稍後再試');
+      }
 
       final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      final Uint8List pngBytes = byteData!.buffer.asUint8List();
+      if (byteData == null) {
+        throw StateError('無法轉換預覽畫面資料');
+      }
+      final Uint8List pngBytes = byteData.buffer.asUint8List();
 
       final suggestion = await _geminiService.analyzeComposition(
         pngBytes,
@@ -202,11 +205,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       });
 
       if (_controller != null && _controller!.value.isStreamingImages == false) {
-        _controller?.startImageStream((image) {
-          if (!_isProcessing) {
-            _processCameraImage(image);
-          }
-        });
+        await _startTrackingStream();
       }
     } on GeminiParseException catch (e) {
       debugPrint('JSON Parsing Error: ${e.message}');
@@ -223,7 +222,17 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         setState(() => _workflow = CameraWorkflow.live);
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('連線錯誤，請檢查網路狀態')));
       }
+    } on StateError catch (e) {
+      debugPrint('Gemini capture error: $e');
+      await _controller?.resumePreview();
+      if (mounted) {
+        setState(() => _workflow = CameraWorkflow.live);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('無法取得畫面，請再試一次')));
+      }
     } finally {
+      if (wasStreaming && _controller?.value.isStreamingImages != true && mounted) {
+        await _startTrackingStream();
+      }
       if (mounted) setState(() => _isProcessing = false);
     }
   }
@@ -272,8 +281,10 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     setState(() => _isProcessing = true);
 
     try {
+      // 1. 拍下照片
       final XFile rawFile = await controller.takePicture();
 
+      // 2. 複製到 App 內部資料夾 (保留你原本供 Provider 使用的邏輯)
       final directory = await getApplicationDocumentsDirectory();
       final fileName = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedPath = '${directory.path}/$fileName';
@@ -281,6 +292,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
       if (!mounted) return;
       context.read<CameraProvider>().addPhoto(savedPath);
+
+      // 3. 使用 gal 將照片存入手機的公開相簿 (Gallery)
+      await Gal.putImage(savedPath);
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已儲存到圖庫'), backgroundColor: Colors.green),
@@ -301,8 +315,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       if (mounted) setState(() => _isProcessing = false);
     }
   }
-
-  @override
+ @override
   Widget build(BuildContext context) {  
     final screenSize = MediaQuery.of(context).size;
     final aiBestPos = Offset(screenSize.width * _bestX, screenSize.height * _bestY);
@@ -341,35 +354,15 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                   showSubjectAndArrow: true, 
                 ),
 
+                // 這裡修復了原本錯亂的括號
                 if (_workflow == CameraWorkflow.analyzing)
                   Container(
                     color: Colors.black.withOpacity(0.4),
                     child: const Center(
                       child: CircularProgressIndicator(color: Colors.white),
                     ),
-                    
-                    // ⭐️ 導入對齊遊戲 UI
-                    AIGuidanceOverlay(
-                      isVisible: showGuidance,
-                      subjectPosition: aiSubjectPos,
-                      bestPosition: aiBestPos,
-                      subjectLabel: _subjectLabel,
-                      // 不論是魔法時刻還是引導階段，都顯示黃圈跟箭頭
-                      debugRects: _allDebugRects,
-                      showSubjectAndArrow: true, 
-                    ),
-
-                    // ⭐️ 遮罩：當 AI 正在思考時，讓畫面變暗並顯示 Loading
-                    if (_workflow == CameraWorkflow.analyzing)
-                      Container(
-                        color: Colors.black.withOpacity(0.4),
-                        child: const Center(
-                          child: CircularProgressIndicator(color: Colors.white),
-                        ),
-                      ),
-                  ],
-                );
-              },
+                  ), 
+              ],
             ),
           ),
 
@@ -406,7 +399,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       ),
     );
   }
-
  Widget _buildTopBar(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
