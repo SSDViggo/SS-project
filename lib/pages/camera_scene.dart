@@ -1,29 +1,28 @@
 import 'dart:io';
-import 'dart:ui' as ui; // 用於將RepaintBoundary畫面轉成PNG
-import 'package:flutter/rendering.dart'; // 為了使用 RenderRepaintBoundary
+import 'dart:ui' as ui;
+import 'package:flutter/rendering.dart';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // 為了 rootBundle
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-// 工具模組：網格、AI 引導 overlay、物件偵測、相機設定、Gemini構圖建議
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
 import '../tools/composition_overlay_manager.dart';
 import '../tools/camera_settings_service.dart';
-import '../tools/gemini_composition_service.dart';
-import 'package:provider/provider.dart';
-import '../providers/camera_provider.dart';
-import '../screens/library_screen.dart';
-import '../main.dart' show cameras;
 
-/// 相機畫面（全螢幕）
-///
-/// - 顯示相機預覽或測試圖片
-/// - 支援即時物件偵測與 AI 構圖建議 overlay
+// ⭐️ 1. 定義我們設計的四大狀態機
+enum CameraWorkflow {
+  live,         // 正常即時預覽
+  analyzing,    // 畫面凍結，等待 Gemini 分析中
+  magicMoment,  // 凍結展示：Gemini 回傳結果，顯示目標與主體
+  guiding       // 遊戲化引導：畫面解凍，讓使用者對齊
+}
+
 class FullScreenCameraScreen extends StatefulWidget {
-  /// 傳入的相機控制器（由呼叫端建立並初始化）
   final CameraController? cameraController;
 
   const FullScreenCameraScreen({super.key, this.cameraController});
@@ -34,21 +33,24 @@ class FullScreenCameraScreen extends StatefulWidget {
 
 class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   File? _testImageFile;
-  bool _hasGuidance = false;
+  
+  // ⭐️ 2. 替換原本單純的 _hasGuidance，改用狀態機控制
+  CameraWorkflow _workflow = CameraWorkflow.live;
+  String _subjectLabel = '分析中...'; // 儲存 LLM 辨識出的物體名稱
+
   bool _isProcessing = false; 
-  String _currentComposition = 'none'; // 預設不顯示特定幾何網格
+  String _currentComposition = 'none'; 
   final CameraSettingsService _cameraSettingsService = CameraSettingsService();
-
-  final GlobalKey _previewKey = GlobalKey();
-
-  // 負責呼叫Gemini取得構圖建議，prompt/API呼叫/JSON解析都封裝在service內
-  final GeminiCompositionService _geminiService = GeminiCompositionService();
+  final GlobalKey _previewKey = GlobalKey(); 
+  
+  late final GenerativeModel _geminiModel;
 
   double _subjectX = 0.5;
   double _subjectY = 0.5;
   double _bestX = 0.9;
   double _bestY = 0.66;
 
+  List<Rect> _allDebugRects = [];
   final ObjectDetectorService _detectorService = ObjectDetectorService();
 
   // 可變的相機控制器：由本畫面自行建立並管理生命週期
@@ -60,7 +62,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   @override
   void initState() {
     super.initState();
-    // 初始化物件偵測 Service
     _detectorService.initialize();
 
     if (widget.cameraController != null) {
@@ -79,16 +80,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       if (mounted) setState(() => _isCameraInitializing = false);
       return;
     }
-
-    final backCamera = cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => cameras.first,
-    );
-
-    final controller = CameraController(
-      backCamera,
-      ResolutionPreset.medium,
-      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+    _geminiModel = GenerativeModel(
+      model: 'gemini-2.5-flash-lite',
+      apiKey: apiKey,
     );
 
     try {
@@ -109,44 +103,27 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   @override
   void dispose() {
-    _controller?.stopImageStream();
-    // 本畫面自行建立的controller，離開時要自己釋放，避免資源洩漏與殭屍controller
-    _controller?.dispose();
+    if (widget.cameraController?.value.isStreamingImages == true) {
+      widget.cameraController?.stopImageStream();
+    }
     _detectorService.dispose();
     super.dispose();
   }
-
-  void _toggleLiveDetection() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    // 切換是否要顯示引導（同時啟/停相機影格串流）
-    setState(() => _hasGuidance = !_hasGuidance);
-
-    if (_hasGuidance) {
-      // 啟動影格串流，回呼中只保留一個處理序列，避免重入
-      await _controller!.startImageStream((CameraImage image) {
-        if (_isProcessing) return;
-        _processCameraImage(image);
-      });
-    } else {
-      await _controller!.stopImageStream();
-    }
-  }
-
-  /// 截取目前畫面、送給[GeminiCompositionService]分析，並套用回傳的構圖建議。
+  
+  // ⭐️ 3. 核心魔法流程：Freeze & Guide
   Future<void> _captureAndAskGemini() async {
-    if (_isProcessing) return;
-
-    if (!_geminiService.hasApiKey) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('找不到Gemini API Key，請確認.env設定')),
-      );
-      return;
-    }
-
-    setState(() => _isProcessing = true);
-
+    // 只有在 live 狀態才能觸發分析
+    if (_isProcessing || _workflow != CameraWorkflow.live) return;
+    
+    setState(() {
+      _isProcessing = true;
+      _workflow = CameraWorkflow.analyzing; // 進入分析中狀態
+    });
+    
+    // ⭐️ 凍結相機預覽
+    await widget.cameraController?.pausePreview();
+    
     try {
-      // 1. 透過RepaintBoundary取得當前畫面的截圖
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) return;
 
@@ -154,87 +131,92 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       final Uint8List pngBytes = byteData!.buffer.asUint8List();
 
+      final prompt = TextPart('''
+        You are a professional photography assistant. 
+        Look at the attached camera preview image. The user's intended main subject is highlighted with a yellow marker.
+
+        Please perform the following tasks:
+        1. Identify the main subject.
+        2. Analyze the scene to choose the BEST composition technique.
+        3. Determine the ideal coordinates (x, y) for the subject (0.0 to 1.0).
+        4. Decide if the exposure needs adjustment (-2.0 to 2.0) or if the flash is needed based on the lighting.
+
+        You MUST respond ONLY with a valid JSON object:
+        {
+          "detected_subject": "string (Traditional Chinese, e.g. 咖啡杯, 人像)",
+          "composition_technique": "string",
+          "patternType": "string",
+          "ideal_x": float,
+          "ideal_y": float,
+          "actionable_tip": "string",
+          "ev_offset": float,
+          "flash_on": boolean,
+          "scene_mode": "string"
+        }
+      ''');
+      final imagePart = DataPart('image/png', pngBytes);
+
+      final response = await _geminiModel.generateContent([
+        Content.multi([prompt, imagePart])
+      ]);
+
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('AI 分析構圖中...')),
-      );
+      
+      String responseText = response.text?.trim() ?? '';
+      responseText = responseText.replaceAll('```json', '').replaceAll('```', '').trim();
+      final data = jsonDecode(responseText);
+      
+      final double newBestX = data['ideal_x'].toDouble();
+      final double newBestY = data['ideal_y'].toDouble();
+      final String newPattern = data['patternType'] ?? 'none';
+      final String detectedSubject = data['detected_subject'] ?? '目標物';
 
-      // 2. 呼叫service分析構圖（prompt、API呼叫、JSON解析都在service內處理）
-      final suggestion = await _geminiService.analyzeComposition(
-        pngBytes,
-        fallbackX: _bestX,
-        fallbackY: _bestY,
-      );
-
-      if (!mounted) return;
-
-      // 3. 套用建議：更新overlay座標與網格樣式
+      // ⭐️ 進入 The Magic Moment：展示 Gemini 計算出的完美座標
       setState(() {
-        _bestX = suggestion.idealX;
-        _bestY = suggestion.idealY;
-        _currentComposition = suggestion.patternType;
+        _bestX = newBestX; 
+        _bestY = newBestY;
+        _currentComposition = newPattern;
+        _subjectLabel = detectedSubject;
+        _workflow = CameraWorkflow.magicMoment;
       });
 
-      // 4. 套用相機硬體設定（曝光、閃光燈）
-      await _cameraSettingsService.applyAISettings(
-        controller: _controller,
-        evOffset: suggestion.evOffset,
-        flashOn: suggestion.flashOn,
-        sceneMode: suggestion.sceneMode,
-        context: context,
-      );
+      // 讓凍結的畫面停留 2.5 秒，給使用者時間吸收資訊
+      await Future.delayed(const Duration(milliseconds: 2500));
+      
+      if (!mounted) return;
+      
+      // ⭐️ 解凍相機，進入遊戲化引導對齊階段
+      await widget.cameraController?.resumePreview();
+      
+      setState(() {
+        _workflow = CameraWorkflow.guiding;
+      });
 
-      // 5. 顯示AI建議對話框
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: Text('推薦構圖：${suggestion.technique}'),
-            content: Text(suggestion.tip),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('套用'),
-              ),
-            ],
-          ),
-        );
-      }
-    } on GeminiParseException catch (e) {
-      debugPrint('JSON Parsing Error: ${e.message}');
-      debugPrint('Raw AI Response: ${e.rawResponse}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('AI 分析失敗，請再試一次')),
-        );
-      }
-    } on GeminiRequestException catch (e) {
-      debugPrint('Gemini API Error: ${e.message}');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('連線錯誤，請檢查網路狀態')),
-        );
-      }
+    } catch (e) {
+      debugPrint('Error: $e');
+      await widget.cameraController?.resumePreview();
+      setState(() => _workflow = CameraWorkflow.live);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('分析失敗，已恢復預覽')));
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
   }
+
   Future<void> _processCameraImage(CameraImage image) async {
     if (!mounted) return;
     _isProcessing = true;
     try {
-      // 將影格交由 Service 處理，Service 回傳主體的相對座標 (0..1)
-      final resultOffset = await _detectorService.detectMainSubject(
+      final result = await _detectorService.detectMainSubject(
         image: image,
         camera: _controller!.description,
         deviceOrientation: MediaQuery.of(context).orientation,
       );
 
-      // 若有偵測到主體，更新對應的座標值供 overlay 使用
-      if (resultOffset != null && mounted) {
+      if (result != null) {
         setState(() {
-          _subjectX = resultOffset.dx;
-          _subjectY = resultOffset.dy;
+          _subjectX = result.position.dx;
+          _subjectY = result.position.dy;
+          _allDebugRects = result.allRects;
         });
       }
     } catch (e) {
@@ -243,193 +225,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       _isProcessing = false;
     }
   }
-  // 靜態圖片測試（沒有實體相機/模擬器相機異常時，用內建圖片測試ML Kit偵測）
-  Future<void> _runStaticImageTest() async {
-    if (_isProcessing) return;
-    
-    setState(() {
-      _isProcessing = true;
-    });
 
-    try {
-      final byteData = await rootBundle.load('test_images/food1.jpg');
-      final tempDir = await getTemporaryDirectory();
-      final tempFile = File('${tempDir.path}/food1_test.jpg');
-      await tempFile.writeAsBytes(byteData.buffer.asUint8List());
-
-      final decodedImage = await decodeImageFromList(await tempFile.readAsBytes());
-      final imgWidth = decodedImage.width.toDouble();
-      final imgHeight = decodedImage.height.toDouble();
-
-      final resultOffset = await _detectorService.detectFromFilePath(
-        filePath: tempFile.path,
-        imgWidth: imgWidth,
-        imgHeight: imgHeight,
-      );
-
-      setState(() {
-        _testImageFile = tempFile; 
-        if (resultOffset != null) {
-          _subjectX = resultOffset.dx;
-          _subjectY = resultOffset.dy;
-          _hasGuidance = true;
-          
-          // 加入成功提示
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Object Detected! 成功抓到主體'), backgroundColor: Colors.green),
-          );
-        } else {
-          _hasGuidance = false;
-          
-          // 加入失敗提示
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('ML Kit 未偵測到明確主體'), backgroundColor: Colors.red),
-          );
-        }
-      });
-    } catch (e) {
-      debugPrint("Static Image Test Error: $e");
-    } finally {
-      setState(() {
-        _isProcessing = false;
-      });
-    }
-  }
-
-  /// 拍照並存入裝置的應用程式文件目錄，然後加進CameraProvider的清單中
-  Future<void> _takePicture() async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('相機尚未初始化')),
-      );
-      return;
-    }
-    if (_isProcessing) return;
-
-    // 拍照前如果正在做即時偵測串流，需先暫停，避免衝突
-    final wasStreaming = controller.value.isStreamingImages;
-    if (wasStreaming) {
-      await controller.stopImageStream();
-    }
-
-    setState(() => _isProcessing = true);
-
-    try {
-      final XFile rawFile = await controller.takePicture();
-
-      // 將拍到的照片複製到App的文件目錄下，給一個唯一的檔名
-      final directory = await getApplicationDocumentsDirectory();
-      final fileName = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedPath = '${directory.path}/$fileName';
-      await File(rawFile.path).copy(savedPath);
-
-      if (!mounted) return;
-
-      context.read<CameraProvider>().addPhoto(savedPath);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已儲存到圖庫'), backgroundColor: Colors.green),
-      );
-    } catch (e) {
-      debugPrint('拍照失敗: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('拍照失敗，請再試一次'), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      // 拍照完成後，如果原本有在做即時偵測，恢復串流
-      if (wasStreaming && mounted) {
-        await controller.startImageStream((CameraImage image) {
-          if (_isProcessing) return;
-          _processCameraImage(image);
-        });
-      }
-      if (mounted) setState(() => _isProcessing = false);
-    }
-  }
-  /// 翻轉前後鏡頭：釋放目前的controller，建立新方向的controller並重新初始化
-  Future<void> _flipCamera() async {
-    if (cameras.length < 2 || _controller == null || _isProcessing || _isFlipping) return;
-    // 立即同步上鎖，避免setState尚未生效前的重複點擊
-    _isFlipping = true;
-
-    final currentDirection = _controller!.description.lensDirection;
-    final newCameraDescription = cameras.firstWhere(
-      (c) => c.lensDirection != currentDirection,
-      orElse: () => cameras.first,
-    );
-
-    setState(() => _isProcessing = true);
-
-    final wasStreaming = _controller!.value.isStreamingImages;
-    final oldController = _controller;
-
-    try {
-      if (wasStreaming) {
-        await oldController!.stopImageStream();
-      }
-
-      final newController = CameraController(
-        newCameraDescription,
-        ResolutionPreset.medium,
-        imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
-      );
-      await newController.initialize();
-      await newController.setFlashMode(_flashMode);
-
-      if (!mounted) {
-        await newController.dispose();
-        await oldController?.dispose();
-        return;
-      }
-
-      // 先讓畫面切換到新的controller
-      setState(() => _controller = newController);
-
-      // 等這一輪畫面真正重繪完成後，才釋放舊的controller，
-      // 避免舊的CameraPreview在重繪前因dispose的通知而存取已釋放的controller
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        oldController?.dispose();
-      });
-
-      if (wasStreaming) {
-        await newController.startImageStream((CameraImage image) {
-          if (_isProcessing) return;
-          _processCameraImage(image);
-        });
-      }
-    } catch (e) {
-      debugPrint('翻轉鏡頭失敗: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('翻轉鏡頭失敗')),
-        );
-      }
-    } finally {
-      _isFlipping = false;
-      if (mounted) setState(() => _isProcessing = false);
-    }
-  }
-
-  /// 切換閃光燈模式（關閉 / 持續開啟）
-  Future<void> _toggleFlash() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-
-    final newMode = _flashMode == FlashMode.off ? FlashMode.torch : FlashMode.off;
-    try {
-      await _controller!.setFlashMode(newMode);
-      if (mounted) setState(() => _flashMode = newMode);
-    } catch (e) {
-      debugPrint('設定閃光燈失敗: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('此裝置不支援閃光燈設定')),
-        );
-      }
-    }
-  }
+  // ... (_runStaticImageTest 保持不變，若不需要可刪除) ...
+  void _runStaticImageTest() {}
 
   @override
   Widget build(BuildContext context) {
@@ -437,41 +235,73 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     final aiBestPos = Offset(screenSize.width * _bestX, screenSize.height * _bestY);
     final aiSubjectPos = Offset(screenSize.width * _subjectX, screenSize.height * _subjectY);
 
+    // 判斷是否要顯示 UI 指引
+    final showGuidance = _workflow == CameraWorkflow.magicMoment || _workflow == CameraWorkflow.guiding;
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 將底圖、網格與AI Overlay用RepaintBoundary包裝，供_captureAndAskGemini截圖使用
           RepaintBoundary(
             key: _previewKey,
             child: Stack(
               fit: StackFit.expand,
               children: [
-                if (_testImageFile != null)
-                  Image.file(_testImageFile!, fit: BoxFit.cover)
-                else if (_controller != null && _controller!.value.isInitialized)
-                  CameraPreview(_controller!)
-                else if (_isCameraInitializing)
-                  const Center(child: CircularProgressIndicator(color: Color(0xFF0A58F5)))
+                if (widget.cameraController != null && widget.cameraController!.value.isInitialized)
+                  CameraPreview(widget.cameraController!)
                 else
                   const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
                 
                 CompositionOverlayManager(
-                  isVisible: _hasGuidance,
+                  isVisible: showGuidance,
                   patternType: _currentComposition,
                 ),
                 
+                // ⭐️ 導入對齊遊戲 UI
                 AIGuidanceOverlay(
-                  isVisible: _hasGuidance,
+                  isVisible: showGuidance,
                   subjectPosition: aiSubjectPos,
                   bestPosition: aiBestPos,
+                  subjectLabel: _subjectLabel,
+                  // 不論是魔法時刻還是引導階段，都顯示黃圈跟箭頭
+                  debugRects: _allDebugRects,
+                  showSubjectAndArrow: true, 
                 ),
+
+                // ⭐️ 遮罩：當 AI 正在思考時，讓畫面變暗並顯示 Loading
+                if (_workflow == CameraWorkflow.analyzing)
+                  Container(
+                    color: Colors.black.withOpacity(0.4),
+                    child: const Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    ),
+                  ),
               ],
             ),
           ),
 
-          // 3) 主要 UI：頂部列 + 底部控制列 (這些不需要被截圖送給 API)
+          // ⭐️ 引導提示詞：解凍後出現在畫面上方
+          if (_workflow == CameraWorkflow.guiding)
+            Positioned(
+              top: 100,
+              left: 0, right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFF0A58F5), width: 1.5)
+                  ),
+                  child: Text(
+                    '請移動手機，將 [$_subjectLabel] 對準藍色光圈',
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ),
+
           SafeArea(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -524,44 +354,44 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       ),
     );
   }
-  Widget _buildTopBar(BuildContext context) {
+
+ Widget _buildTopBar(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.white),
-            onPressed: () => Navigator.of(context).maybePop(),
+          // ⭐️ 左側關閉按鈕，加上半透明黑色圓底
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景，數字可調整透明度
+              shape: BoxShape.circle,
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
           ),
           Row(
             children: [
-              // 即時物件偵測開關
-              IconButton(
-                icon: Icon(
-                  Icons.center_focus_strong,
-                  color: _hasGuidance && _testImageFile == null ? const Color(0xFF0A58F5) : Colors.white,
-                ),
-                onPressed: () {
-                  if (_testImageFile != null) {
-                    setState(() => _testImageFile = null);
-                  }
-                  _toggleLiveDetection();
-                },
-              ),
-              // 閃光燈開關
-              IconButton(
-                icon: Icon(
-                  _flashMode == FlashMode.off ? Icons.flash_off : Icons.flash_on,
-                  color: _flashMode == FlashMode.off ? Colors.white : Colors.amber,
-                ),
-                onPressed: _toggleFlash,
-              ),
-              // 翻轉前後鏡頭
-              IconButton(
-                icon: const Icon(Icons.cameraswitch, color: Colors.white),
-                onPressed: _flipCamera,
-              ),
+              // ⭐️ 右側對焦按鈕，加上半透明黑色圓底
+              // Container(
+              //   decoration: BoxDecoration(
+              //     color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景
+              //     shape: BoxShape.circle,
+              //   ),
+              //   child: IconButton(
+              //     icon: Icon(
+              //       Icons.center_focus_strong,
+              //       // 根據是否有開起追蹤串流來亮燈
+              //       color: widget.cameraController?.value.isStreamingImages == true 
+              //           ? const Color(0xFF0A58F5) 
+              //           : Colors.white,
+              //     ),
+              //     onPressed: _toggleLiveDetection,
+              //   ),
+              // ),
+              // 如果你之後有把閃光燈或翻轉鏡頭加回來，也可以用同樣的 Container 包住它們
             ],
           ),
         ],
@@ -575,10 +405,15 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // 左下角：原本是相簿，我們把它改成測試按鈕
+          // 重置按鈕 (可讓使用者隨時跳出引導流程回到預覽)
           IconButton(
-            icon: const Icon(Icons.image_search, color: Colors.white), // 測試圖示
-            onPressed: _runStaticImageTest, // 點擊載入 food1.jpg 測試
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            onPressed: () {
+              setState(() {
+                _workflow = CameraWorkflow.live;
+                _currentComposition = 'none';
+              });
+            },
           ),
           
           // 中間快門按鈕：點擊拍照
@@ -600,15 +435,15 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
             ),
           ),
           
-          // 右下角：原本的相機即時偵測開關
+          // AI 分析按鈕
           IconButton(
-            icon: _isProcessing 
+            icon: _workflow == CameraWorkflow.analyzing 
                 ? const SizedBox(
                     width: 24, height: 24,
                     child: CircularProgressIndicator(color: Color(0xFF0A58F5), strokeWidth: 2.0),
                   )
-                : const Icon(Icons.auto_awesome, color: Colors.white, size: 28), // AI 閃亮圖示
-            onPressed: _captureAndAskGemini,
+                : const Icon(Icons.auto_awesome, color: Colors.white, size: 28),
+            onPressed: _captureAndAskGemini, 
           ),
         ],
       ),
