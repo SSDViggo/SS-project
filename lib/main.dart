@@ -9,6 +9,8 @@ import 'screens/edit_screen.dart';
 
 import 'screens/composition_library_screen.dart';
 
+import 'screens/ai_edit_screen.dart';
+
 // 1. 宣告全域變數來儲存設備上可用的相機列表
 List<CameraDescription> cameras = [];
 
@@ -172,6 +174,12 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
                 ),
               ); 
               break;
+              // Navigator.of(context).push(
+              //   MaterialPageRoute<void>(
+              //     builder: (context) => const AiEditScreen(),
+              //   ),
+              // ); 
+              // break;
           }
         },
         items: const [
