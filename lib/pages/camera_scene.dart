@@ -76,29 +76,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     _detectorService.dispose();
     super.dispose();
   }
-
-  // ⭐️ 開啟 ML Kit 持續偵測 (作為戰術小腦)
-  void _toggleLiveDetection() async {
-    if (widget.cameraController == null || !widget.cameraController!.value.isInitialized) return;
-
-    if (_workflow == CameraWorkflow.live) {
-      // 啟動追蹤
-      await widget.cameraController!.startImageStream((CameraImage image) {
-        if (_isProcessing) return;
-        _processCameraImage(image);
-      });
-      // 注意：這裡我們保持在 live 狀態，只是開啟了底層追蹤
-    } else {
-      // 停止追蹤並回歸純淨預覽
-      if (widget.cameraController!.value.isStreamingImages) {
-        await widget.cameraController!.stopImageStream();
-      }
-      setState(() {
-        _workflow = CameraWorkflow.live;
-      });
-    }
-  }
-
+  
   // ⭐️ 3. 核心魔法流程：Freeze & Guide
   Future<void> _captureAndAskGemini() async {
     // 只有在 live 狀態才能觸發分析
@@ -325,22 +303,22 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           Row(
             children: [
               // ⭐️ 右側對焦按鈕，加上半透明黑色圓底
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景
-                  shape: BoxShape.circle,
-                ),
-                child: IconButton(
-                  icon: Icon(
-                    Icons.center_focus_strong,
-                    // 根據是否有開起追蹤串流來亮燈
-                    color: widget.cameraController?.value.isStreamingImages == true 
-                        ? const Color(0xFF0A58F5) 
-                        : Colors.white,
-                  ),
-                  onPressed: _toggleLiveDetection,
-                ),
-              ),
+              // Container(
+              //   decoration: BoxDecoration(
+              //     color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景
+              //     shape: BoxShape.circle,
+              //   ),
+              //   child: IconButton(
+              //     icon: Icon(
+              //       Icons.center_focus_strong,
+              //       // 根據是否有開起追蹤串流來亮燈
+              //       color: widget.cameraController?.value.isStreamingImages == true 
+              //           ? const Color(0xFF0A58F5) 
+              //           : Colors.white,
+              //     ),
+              //     onPressed: _toggleLiveDetection,
+              //   ),
+              // ),
               // 如果你之後有把閃光燈或翻轉鏡頭加回來，也可以用同樣的 Container 包住它們
             ],
           ),
