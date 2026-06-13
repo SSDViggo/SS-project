@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -183,15 +184,15 @@ class ObjectDetectorService {
       rotation = InputImageRotationValue.fromRawValue(rotationCompensation);
     }
     if (rotation == null) return null;
-    final format = InputImageFormatValue.fromRawValue(image.format.raw);
-    if (format == null ||
-        (Platform.isAndroid && format != InputImageFormat.nv21) &&
-        (Platform.isIOS && format != InputImageFormat.bgra8888)) {
-      return null;
-    }
     if (image.planes.isEmpty) return null;
+
+    final format = Platform.isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888;
+    final bytes = Platform.isAndroid ? _bytesFromCameraImage(image) : image.planes[0].bytes;
+
+    if (bytes == null) return null;
+
     return InputImage.fromBytes(
-      bytes: image.planes[0].bytes,
+      bytes: bytes,
       metadata: InputImageMetadata(
         size: Size(image.width.toDouble(), image.height.toDouble()),
         rotation: rotation,
@@ -199,5 +200,44 @@ class ObjectDetectorService {
         bytesPerRow: image.planes[0].bytesPerRow,
       ),
     );
+  }
+
+  Uint8List? _bytesFromCameraImage(CameraImage image) {
+    if (image.planes.length < 3) return null;
+
+    final int width = image.width;
+    final int height = image.height;
+    final int ySize = width * height;
+    final int uvSize = ySize ~/ 2;
+    final Uint8List nv21 = Uint8List(ySize + uvSize);
+
+    final Plane yPlane = image.planes[0];
+    final Plane uPlane = image.planes[1];
+    final Plane vPlane = image.planes[2];
+
+    int destinationIndex = 0;
+    for (int row = 0; row < height; row++) {
+      final int rowStart = row * yPlane.bytesPerRow;
+      nv21.setRange(
+        destinationIndex,
+        destinationIndex + width,
+        yPlane.bytes,
+        rowStart,
+      );
+      destinationIndex += width;
+    }
+
+    final int chromaHeight = height ~/ 2;
+    final int chromaWidth = width ~/ 2;
+    for (int row = 0; row < chromaHeight; row++) {
+      for (int col = 0; col < chromaWidth; col++) {
+        final int vIndex = row * vPlane.bytesPerRow + col * vPlane.bytesPerPixel!;
+        final int uIndex = row * uPlane.bytesPerRow + col * uPlane.bytesPerPixel!;
+        nv21[destinationIndex++] = vPlane.bytes[vIndex];
+        nv21[destinationIndex++] = uPlane.bytes[uIndex];
+      }
+    }
+
+    return nv21;
   }
 }

@@ -7,6 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
@@ -54,6 +57,23 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   CameraController? _controller;
   bool _isCameraInitializing = true;
 
+  Future<void> _startTrackingStream() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+    if (_cameraController!.value.isStreamingImages) return;
+
+    await _cameraController!.startImageStream((image) {
+      if (!_isProcessing) {
+        _processCameraImage(image);
+      }
+    });
+  }
+
+  Future<void> _stopTrackingStream() async {
+    if (_cameraController?.value.isStreamingImages == true) {
+      await _cameraController!.stopImageStream();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -78,14 +98,28 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       orElse: () => cameras.first,
     );
 
-    final controller = CameraController(
-      backCamera,
-      ResolutionPreset.medium,
-      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
-    );
+    _initializeCameraFuture = _initializeCamera();
+  }
 
+  Future<void> _initializeCamera() async {
     try {
+      final available = await availableCameras();
+      if (!mounted || available.isEmpty) return;
+
+      final backCamera = available.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => available.first,
+      );
+
+      final controller = CameraController(
+        backCamera,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
+
       await controller.initialize();
+
       if (!mounted) {
         await controller.dispose();
         return;
@@ -313,8 +347,29 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                     child: const Center(
                       child: CircularProgressIndicator(color: Colors.white),
                     ),
-                  ),
-              ],
+                    
+                    // ⭐️ 導入對齊遊戲 UI
+                    AIGuidanceOverlay(
+                      isVisible: showGuidance,
+                      subjectPosition: aiSubjectPos,
+                      bestPosition: aiBestPos,
+                      subjectLabel: _subjectLabel,
+                      // 不論是魔法時刻還是引導階段，都顯示黃圈跟箭頭
+                      debugRects: _allDebugRects,
+                      showSubjectAndArrow: true, 
+                    ),
+
+                    // ⭐️ 遮罩：當 AI 正在思考時，讓畫面變暗並顯示 Loading
+                    if (_workflow == CameraWorkflow.analyzing)
+                      Container(
+                        color: Colors.black.withOpacity(0.4),
+                        child: const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
 
