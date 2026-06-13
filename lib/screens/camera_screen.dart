@@ -170,7 +170,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       }
       final Uint8List pngBytes = byteData.buffer.asUint8List();
 
-      final suggestion = await _geminiService.analyzeComposition(
+     final suggestion = await _geminiService.analyzeComposition(
         pngBytes,
         fallbackX: _bestX,
         fallbackY: _bestY,
@@ -185,6 +185,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         _subjectLabel = suggestion.detectedSubject;
         _workflow = CameraWorkflow.magicMoment;
       });
+
+      // ⭐️ 關鍵新增：把大腦 (Gemini) 認出來的標籤，告訴眼睛 (ML Kit)
+      _detectorService.updateTargetLabel(suggestion.detectedSubject);
 
       await _cameraSettingsService.applyAISettings(
         controller: _controller,
