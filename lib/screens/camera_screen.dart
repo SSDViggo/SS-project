@@ -7,6 +7,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import '../tools/ai_guidance_overlay.dart';
@@ -33,6 +34,8 @@ class FullScreenCameraScreen extends StatefulWidget {
 
 class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   File? _testImageFile;
+  CameraController? _cameraController;
+  Future<void>? _initializeCameraFuture;
   
   // ⭐️ 2. 替換原本單純的 _hasGuidance，改用狀態機控制
   CameraWorkflow _workflow = CameraWorkflow.live;
@@ -53,6 +56,23 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   List<Rect> _allDebugRects = [];
   final ObjectDetectorService _detectorService = ObjectDetectorService();
 
+  Future<void> _startTrackingStream() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) return;
+    if (_cameraController!.value.isStreamingImages) return;
+
+    await _cameraController!.startImageStream((image) {
+      if (!_isProcessing) {
+        _processCameraImage(image);
+      }
+    });
+  }
+
+  Future<void> _stopTrackingStream() async {
+    if (_cameraController?.value.isStreamingImages == true) {
+      await _cameraController!.stopImageStream();
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -65,13 +85,48 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       model: 'gemini-2.5-flash',
       apiKey: apiKey,
     );
+
+    _initializeCameraFuture = _initializeCamera();
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      final available = await availableCameras();
+      if (!mounted || available.isEmpty) return;
+
+      final backCamera = available.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => available.first,
+      );
+
+      final controller = CameraController(
+        backCamera,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
+
+      await controller.initialize();
+
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+
+      setState(() {
+        _cameraController = controller;
+      });
+    } catch (e) {
+      debugPrint('Camera initialize error: $e');
+    }
   }
 
   @override
   void dispose() {
-    if (widget.cameraController?.value.isStreamingImages == true) {
-      widget.cameraController?.stopImageStream();
+    if (_cameraController?.value.isStreamingImages == true) {
+      _cameraController?.stopImageStream();
     }
+    _cameraController?.dispose();
     _detectorService.dispose();
     super.dispose();
   }
@@ -87,7 +142,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     });
     
     // ⭐️ 凍結相機預覽
-    await widget.cameraController?.pausePreview();
+    await _cameraController?.pausePreview();
     
     try {
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
@@ -152,24 +207,18 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       if (!mounted) return;
       
       // ⭐️ 解凍相機，進入遊戲化引導對齊階段
-      await widget.cameraController?.resumePreview();
+      await _cameraController?.resumePreview();
       
       setState(() {
         _workflow = CameraWorkflow.guiding;
       });
 
       // ⭐️ 啟動物件追蹤串流
-      if (widget.cameraController != null && widget.cameraController!.value.isStreamingImages == false) {
-        widget.cameraController?.startImageStream((image) {
-          if (!_isProcessing) {
-            _processCameraImage(image);
-          }
-        });
-      }
+      await _startTrackingStream();
 
     } catch (e) {
       debugPrint('Error: $e');
-      await widget.cameraController?.resumePreview();
+      await _cameraController?.resumePreview();
       setState(() => _workflow = CameraWorkflow.live);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('分析失敗，已恢復預覽')));
     } finally {
@@ -182,7 +231,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     try {
       final result = await _detectorService.detectMainSubject(
         image: image,
-        camera: widget.cameraController!.description,
+        camera: _cameraController!.description,
         deviceOrientation: MediaQuery.of(context).orientation,
       );
 
@@ -197,6 +246,46 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       debugPrint("Object Detection Error: $e");
     } finally {
       _isProcessing = false;
+    }
+  }
+
+  Future<void> _capturePhotoToGallery() async {
+    if (_cameraController == null || !_cameraController!.value.isInitialized || _isProcessing) return;
+
+    final wasStreaming = _cameraController!.value.isStreamingImages;
+    setState(() {
+      _isProcessing = true;
+    });
+
+    try {
+      if (wasStreaming) {
+        await _stopTrackingStream();
+      }
+
+      final photo = await _cameraController!.takePicture();
+      final fileName = 'AI_${DateTime.now().millisecondsSinceEpoch}';
+      await ImageGallerySaver.saveFile(photo.path, name: fileName);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已儲存到相簿')),
+      );
+    } catch (e) {
+      debugPrint('Capture error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('拍照失敗')),
+        );
+      }
+    } finally {
+      if (mounted && wasStreaming) {
+        await _startTrackingStream();
+      }
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
     }
   }
 
@@ -219,39 +308,47 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         children: [
           RepaintBoundary(
             key: _previewKey,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                if (widget.cameraController != null && widget.cameraController!.value.isInitialized)
-                  CameraPreview(widget.cameraController!)
-                else
-                  const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
-                
-                CompositionOverlayManager(
-                  isVisible: showGuidance,
-                  patternType: _currentComposition,
-                ),
-                
-                // ⭐️ 導入對齊遊戲 UI
-                AIGuidanceOverlay(
-                  isVisible: showGuidance,
-                  subjectPosition: aiSubjectPos,
-                  bestPosition: aiBestPos,
-                  subjectLabel: _subjectLabel,
-                  // 不論是魔法時刻還是引導階段，都顯示黃圈跟箭頭
-                  debugRects: _allDebugRects,
-                  showSubjectAndArrow: true, 
-                ),
+            child: FutureBuilder<void>(
+              future: _initializeCameraFuture,
+              builder: (context, snapshot) {
+                if (_cameraController == null || !_cameraController!.value.isInitialized) {
+                  return const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  );
+                }
 
-                // ⭐️ 遮罩：當 AI 正在思考時，讓畫面變暗並顯示 Loading
-                if (_workflow == CameraWorkflow.analyzing)
-                  Container(
-                    color: Colors.black.withOpacity(0.4),
-                    child: const Center(
-                      child: CircularProgressIndicator(color: Colors.white),
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CameraPreview(_cameraController!),
+                    
+                    CompositionOverlayManager(
+                      isVisible: showGuidance,
+                      patternType: _currentComposition,
                     ),
-                  ),
-              ],
+                    
+                    // ⭐️ 導入對齊遊戲 UI
+                    AIGuidanceOverlay(
+                      isVisible: showGuidance,
+                      subjectPosition: aiSubjectPos,
+                      bestPosition: aiBestPos,
+                      subjectLabel: _subjectLabel,
+                      // 不論是魔法時刻還是引導階段，都顯示黃圈跟箭頭
+                      debugRects: _allDebugRects,
+                      showSubjectAndArrow: true, 
+                    ),
+
+                    // ⭐️ 遮罩：當 AI 正在思考時，讓畫面變暗並顯示 Loading
+                    if (_workflow == CameraWorkflow.analyzing)
+                      Container(
+                        color: Colors.black.withOpacity(0.4),
+                        child: const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
 
@@ -310,24 +407,17 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           ),
           Row(
             children: [
-              // ⭐️ 右側對焦按鈕，加上半透明黑色圓底
-              // Container(
-              //   decoration: BoxDecoration(
-              //     color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景
-              //     shape: BoxShape.circle,
-              //   ),
-              //   child: IconButton(
-              //     icon: Icon(
-              //       Icons.center_focus_strong,
-              //       // 根據是否有開起追蹤串流來亮燈
-              //       color: widget.cameraController?.value.isStreamingImages == true 
-              //           ? const Color(0xFF0A58F5) 
-              //           : Colors.white,
-              //     ),
-              //     onPressed: _toggleLiveDetection,
-              //   ),
-              // ),
-              // 如果你之後有把閃光燈或翻轉鏡頭加回來，也可以用同樣的 Container 包住它們
+              // 拍照按鈕
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.4),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.photo_camera, color: Colors.white),
+                  onPressed: _capturePhotoToGallery,
+                ),
+              ),
             ],
           ),
         ],
@@ -344,10 +434,8 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           // 重置按鈕 (可讓使用者隨時跳出引導流程回到預覽)
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white),
-            onPressed: () {
-              if (widget.cameraController?.value.isStreamingImages == true) {
-                widget.cameraController?.stopImageStream();
-              }
+            onPressed: () async {
+              await _stopTrackingStream();
               _detectorService.resetLock();
               setState(() {
                 _workflow = CameraWorkflow.live;
