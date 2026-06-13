@@ -305,3 +305,4 @@ class CompositionGuidePainter extends CustomPainter {
   @override
   bool shouldRepaint(CompositionGuidePainter oldDelegate) => false;
 }
+

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 import 'package:flutter/rendering.dart';
@@ -12,7 +11,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
-import '../tools/composition_overlay_manager.dart'; 
+import '../tools/composition_overlay_manager.dart';
 import '../tools/camera_settings_service.dart';
 
 // ⭐️ 1. 定義我們設計的四大狀態機
@@ -54,18 +53,52 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   List<Rect> _allDebugRects = [];
   final ObjectDetectorService _detectorService = ObjectDetectorService();
 
+  // 可變的相機控制器：由本畫面自行建立並管理生命週期
+  CameraController? _controller;
+  FlashMode _flashMode = FlashMode.off;
+  bool _isCameraInitializing = true;
+  bool _isFlipping = false; // 防止同一次翻轉動作被重複觸發
+
   @override
   void initState() {
     super.initState();
     _detectorService.initialize();
-    final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
-    if (apiKey.isEmpty) {
-      debugPrint('警告：找不到 API Key，請檢查 .env 檔案設定。');
+
+    if (widget.cameraController != null) {
+      // 呼叫端已經傳入初始化好的controller（向後相容）
+      _controller = widget.cameraController;
+      _isCameraInitializing = false;
+    } else {
+      // 由本畫面自己建立並初始化controller
+      _initOwnCamera();
+    }
+  }
+
+  /// 建立並初始化一個由本畫面自己管理的CameraController（預設後置鏡頭）
+  Future<void> _initOwnCamera() async {
+    if (cameras.isEmpty) {
+      if (mounted) setState(() => _isCameraInitializing = false);
+      return;
     }
     _geminiModel = GenerativeModel(
       model: 'gemini-2.5-flash-lite',
       apiKey: apiKey,
     );
+
+    try {
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _isCameraInitializing = false;
+      });
+    } catch (e) {
+      debugPrint('相機初始化失敗: $e');
+      if (mounted) setState(() => _isCameraInitializing = false);
+    }
   }
 
   @override
@@ -94,7 +127,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
       if (boundary == null) return;
 
-      final ui.Image image = await boundary.toImage(pixelRatio: 2.0); 
+      final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
       final Uint8List pngBytes = byteData!.buffer.asUint8List();
 
@@ -165,16 +198,17 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       setState(() => _workflow = CameraWorkflow.live);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('分析失敗，已恢復預覽')));
     } finally {
-      setState(() => _isProcessing = false);
+      if (mounted) setState(() => _isProcessing = false);
     }
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
+    if (!mounted) return;
     _isProcessing = true;
     try {
       final result = await _detectorService.detectMainSubject(
         image: image,
-        camera: widget.cameraController!.description,
+        camera: _controller!.description,
         deviceOrientation: MediaQuery.of(context).orientation,
       );
 
@@ -196,7 +230,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   void _runStaticImageTest() {}
 
   @override
-  Widget build(BuildContext context) {  
+  Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
     final aiBestPos = Offset(screenSize.width * _bestX, screenSize.height * _bestY);
     final aiSubjectPos = Offset(screenSize.width * _subjectX, screenSize.height * _subjectY);
@@ -279,7 +313,45 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           ),
         ],
       ),
-      // ... bottomNavigationBar 保持不變 ...
+      bottomNavigationBar: Theme(
+        data: ThemeData(
+          splashColor: Colors.transparent,
+          highlightColor: Colors.transparent,
+        ),
+        child: BottomNavigationBar(
+          backgroundColor: const Color(0xFF121212),
+          selectedItemColor: const Color(0xFF0A58F5),
+          unselectedItemColor: Colors.grey,
+          showUnselectedLabels: true,
+          type: BottomNavigationBarType.fixed,
+          currentIndex: 1,
+          onTap: (index) {
+            switch (index) {
+              case 0: // Home
+                Navigator.of(context).maybePop();
+                break;
+              case 1: // Camera（目前所在頁面，不做事）
+                break;
+              case 2: // Library
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const LibraryScreen()),
+                );
+                break;
+              case 3: // Edit（尚未實作）
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('編輯功能尚未完成')),
+                );
+                break;
+            }
+          },
+          items: const [
+            BottomNavigationBarItem(icon: Icon(Icons.home_outlined), label: 'Home'),
+            BottomNavigationBarItem(icon: Icon(Icons.camera_alt), label: 'Camera'),
+            BottomNavigationBarItem(icon: Icon(Icons.grid_view), label: 'Library'),
+            BottomNavigationBarItem(icon: Icon(Icons.tune), label: 'Edit'),
+          ],
+        ),
+      ),
     );
   }
 
@@ -344,16 +416,23 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
             },
           ),
           
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 72, height: 72,
-                decoration: const BoxDecoration(color: Color(0xFF0A58F5), shape: BoxShape.circle),
-                child: const Icon(Icons.camera, color: Colors.white, size: 34),
-              ),
-              const SizedBox(height: 8),
-            ],
+          // 中間快門按鈕：點擊拍照
+          GestureDetector(
+            onTap: _isProcessing ? null : _takePicture,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 72, height: 72,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0A58F5).withOpacity(_isProcessing ? 0.5 : 1.0),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.camera, color: Colors.white, size: 34),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
           ),
           
           // AI 分析按鈕
