@@ -302,28 +302,43 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
     );
   }
 
-  Widget _buildTopBar(BuildContext context) {
+ Widget _buildTopBar(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.white),
-            onPressed: () => Navigator.of(context).maybePop(),
+          // ⭐️ 左側關閉按鈕，加上半透明黑色圓底
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景，數字可調整透明度
+              shape: BoxShape.circle,
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
           ),
           Row(
             children: [
-              IconButton(
-                icon: Icon(
-                  Icons.center_focus_strong,
-                  // 根據是否有開起追蹤串流來亮燈
-                  color: widget.cameraController?.value.isStreamingImages == true ? const Color(0xFF0A58F5) : Colors.white,
+              // ⭐️ 右側對焦按鈕，加上半透明黑色圓底
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.4), // 淡淡的黑色背景
+                  shape: BoxShape.circle,
                 ),
-                onPressed: _toggleLiveDetection,
+                child: IconButton(
+                  icon: Icon(
+                    Icons.center_focus_strong,
+                    // 根據是否有開起追蹤串流來亮燈
+                    color: widget.cameraController?.value.isStreamingImages == true 
+                        ? const Color(0xFF0A58F5) 
+                        : Colors.white,
+                  ),
+                  onPressed: _toggleLiveDetection,
+                ),
               ),
-              IconButton(icon: const Icon(Icons.flash_off, color: Colors.white), onPressed: () {}),
-              IconButton(icon: const Icon(Icons.cameraswitch, color: Colors.white), onPressed: () {}),
+              // 如果你之後有把閃光燈或翻轉鏡頭加回來，也可以用同樣的 Container 包住它們
             ],
           ),
         ],
