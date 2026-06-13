@@ -2,7 +2,7 @@ import 'dart:io'; // 需要用來判斷 Platform
 import 'package:camera/camera.dart'; // 導入 camera 套件
 import 'package:flutter/material.dart';
 
-import 'pages/camera_scene.dart';
+import 'screens/camera_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'screens/composition_library_screen.dart';
 
