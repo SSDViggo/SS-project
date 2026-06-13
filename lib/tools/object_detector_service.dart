@@ -1,141 +1,179 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_object_detection/google_mlkit_object_detection.dart';
 
-/// ObjectDetectorService
-///
-/// 簡單封裝 ML Kit 的物件偵測功能，提供：
-/// - `initialize()` / `dispose()` 管理生命週期
-/// - `detectMainSubject(...)`：接收相機串流的 `CameraImage`，回傳主體的正規化中心座標（Offset，x/y 範圍 0.0~1.0）
-/// - `detectFromFilePath(...)`：以靜態圖片路徑做測試用偵測
-///
-/// 備註：座標系為圖片像素座標，回傳前會做簡單的 orientation 處理（針對常見 Android/iOS 差異）。
+class DetectionResult {
+  final Offset position;
+  final String label;
+  final List<Rect> allRects;
+
+  DetectionResult({required this.position, required this.label, required this.allRects});
+}
+
 class ObjectDetectorService {
   late ObjectDetector _objectDetector;
   bool _isInitialized = false;
+  Offset? _lockedCenterRaw; 
 
-  /// 初始化物件偵測器。
-  ///
-  /// 使用 `DetectionMode.stream` 以便於相機串流即時偵測。
   void initialize() {
     final options = ObjectDetectorOptions(
       mode: DetectionMode.stream,
-      classifyObjects: false, // 不做分類以提高效能
-      multipleObjects: false, // 只取畫面中最主要的一個物件
+      classifyObjects: true,  
+      multipleObjects: true,  
     );
 
     _objectDetector = ObjectDetector(options: options);
     _isInitialized = true;
   }
 
-  /// 釋放底層資源
   void dispose() {
     if (_isInitialized) {
       _objectDetector.close();
       _isInitialized = false;
     }
+    _lockedCenterRaw = null;
   }
 
-  /// 偵測相機串流影格中的主體，並回傳正規化的中心點座標 (x, y 為 0.0 ~ 1.0)
-  ///
-  /// 參數：
-  /// - `image`: 相機提供的 `CameraImage`
-  /// - `camera`: 相機描述物件，用來取得 sensorOrientation 與前/後鏡頭資訊
-  /// - `deviceOrientation`: 當前裝置方向（portrait / landscape），用來簡單調整座標
-  Future<Offset?> detectMainSubject({
+  // 讓外部強制放棄目標
+  void resetLock() {
+    _lockedCenterRaw = null;
+  }
+
+  Future<DetectionResult?> detectMainSubject({
     required CameraImage image,
     required CameraDescription camera,
     required Orientation deviceOrientation,
   }) async {
     if (!_isInitialized) return null;
 
-    // 1) 將 CameraImage 轉為 ML Kit 可接受的 InputImage
     final inputImage = _inputImageFromCameraImage(image, camera);
     if (inputImage == null) return null;
 
-    // 2) 執行偵測
     final List<DetectedObject> objects = await _objectDetector.processImage(inputImage);
 
-    if (objects.isEmpty) return null;
-
-    // 3) 取第一個（最主要）物件，計算其 bounding box 中心並正規化
-    final mainObject = objects.first;
-    final rect = mainObject.boundingBox;
+    if (objects.isEmpty) {
+      _lockedCenterRaw = null;
+      return null;
+    }
 
     final imgWidth = image.width.toDouble();
     final imgHeight = image.height.toDouble();
 
+    final sensorOrientation = camera.sensorOrientation;
+    var rotationCompensation = 0;
+    if (Platform.isAndroid) {
+      if (camera.lensDirection == CameraLensDirection.front) {
+        rotationCompensation = (sensorOrientation + 0) % 360;
+      } else {
+        rotationCompensation = (sensorOrientation - 0 + 360) % 360;
+      }
+    } else if (Platform.isIOS) {
+      rotationCompensation = sensorOrientation;
+    }
+
+    // ⭐️ 核心修正：避免「重複旋轉」陷阱
+    // ML Kit 吐出來的 BoundingBox 已經是轉正的，X 跟 Y 不用再互換。
+    // 我們只需要定義「轉正後」的畫布寬高是多少，用來做百分比除法即可。
+    double domainWidth = imgWidth;
+    double domainHeight = imgHeight;
+    
+    // 手機直拿時，感光元件通常是橫的 (90 或 270 度)
+    if (rotationCompensation == 90 || rotationCompensation == 270) {
+      domainWidth = imgHeight;   // 原本的短邊變成轉正後的寬
+      domainHeight = imgWidth;   // 原本的長邊變成轉正後的高
+    }
+
+    // ⭐️ 史上最乾淨的座標轉換
+    Offset transform(double rawPxX, double rawPxY) {
+      double nx = rawPxX / domainWidth;
+      double ny = rawPxY / domainHeight;
+
+      // 只有前鏡頭需要左右鏡像翻轉
+      if (camera.lensDirection == CameraLensDirection.front) {
+        nx = 1.0 - nx;
+      }
+      return Offset(nx, ny);
+    }
+
+    // 收集所有框供 Debug 顯示
+    List<Rect> allNormalizedRects = [];
+    for (var obj in objects) {
+      final r = obj.boundingBox;
+      final p1 = transform(r.left, r.top);
+      final p2 = transform(r.right, r.bottom);
+      allNormalizedRects.add(Rect.fromPoints(p1, p2)); 
+    }
+
+    // --- 尋找與鎖定邏輯 ---
+    DetectedObject? targetObject;
+    
+    // 1. 死死咬住舊目標
+    if (_lockedCenterRaw != null) {
+      double minDistance = double.infinity;
+      for (var obj in objects) {
+        final rect = obj.boundingBox;
+        final cx = rect.left + (rect.width / 2);
+        final cy = rect.top + (rect.height / 2);
+        double distSq = pow(cx - _lockedCenterRaw!.dx, 2) + pow(cy - _lockedCenterRaw!.dy, 2).toDouble();
+
+        if (distSq < minDistance && distSq < (domainWidth * domainWidth * 0.15)) { 
+          minDistance = distSq;
+          targetObject = obj;
+        }
+      }
+    }
+
+    // 2. 初次鎖定：嚴格挑選「最靠近畫面正中間」的物體
+    if (targetObject == null) {
+      double bestDist = double.infinity;
+      final centerImageX = domainWidth / 2;
+      final centerImageY = domainHeight / 2;
+      
+      for (var obj in objects) {
+        final rect = obj.boundingBox;
+        final cx = rect.left + (rect.width / 2);
+        final cy = rect.top + (rect.height / 2);
+        
+        final distToCenterSq = pow(cx - centerImageX, 2) + pow(cy - centerImageY, 2).toDouble();
+        
+        if (distToCenterSq < bestDist) {
+          bestDist = distToCenterSq;
+          targetObject = obj;
+        }
+      }
+      targetObject ??= objects.first;
+    }
+
+    // 更新鎖定中心
+    final rect = targetObject.boundingBox;
     final centerX = rect.left + (rect.width / 2);
     final centerY = rect.top + (rect.height / 2);
+    _lockedCenterRaw = Offset(centerX, centerY);
 
-    double normalizedX = centerX / imgWidth;
-    double normalizedY = centerY / imgHeight;
-
-    // 裝置直式（portrait）在某些 Android 裝置 SensorOrientation 與像素維度會有互換，做簡單的調整
-    if (deviceOrientation == Orientation.portrait && Platform.isAndroid) {
-      normalizedX = centerY / imgHeight;
-      normalizedY = centerX / imgWidth;
+    String detectedLabel = '鎖定目標';
+    if (targetObject.labels.isNotEmpty) {
+      detectedLabel = targetObject.labels.first.text;
     }
 
-    return Offset(normalizedX, normalizedY);
-  }
+    final finalPos = transform(centerX, centerY);
 
-  /// 針對靜態圖片的偵測（主要用於測試）
-  ///
-  /// 輸入需提供圖片的寬高（像素），回傳方式同上為正規化的中心座標
-  /// 處理靜態檔案路徑 (供測試用)
-  Future<Offset?> detectFromFilePath({
-    required String filePath,
-    required double imgWidth,
-    required double imgHeight,
-  }) async {
-    // ⭐️ 關鍵修改：針對靜態圖片，即時建立一個專屬的 single 模式 Detector
-    final staticOptions = ObjectDetectorOptions(
-      mode: DetectionMode.single, // 改為單張圖片模式
-      classifyObjects: false,
-      multipleObjects: false,
+    return DetectionResult(
+      position: finalPos,
+      label: detectedLabel,
+      allRects: allNormalizedRects,
     );
-    final staticDetector = ObjectDetector(options: staticOptions);
-
-    try {
-      // 從檔案路徑建立 InputImage
-      final inputImage = InputImage.fromFilePath(filePath);
-      
-      // 使用專屬的 staticDetector 進行辨識
-      final List<DetectedObject> objects = await staticDetector.processImage(inputImage);
-
-      // 若沒有抓到物件，回傳 null
-      if (objects.isEmpty) return null;
-
-      final mainObject = objects.first;
-      final rect = mainObject.boundingBox;
-
-      // 計算 Bounding Box 的中心點
-      final centerX = rect.left + (rect.width / 2);
-      final centerY = rect.top + (rect.height / 2);
-
-      // 進行 Normalization (正規化至 0.0 ~ 1.0)
-      return Offset(centerX / imgWidth, centerY / imgHeight);
-      
-    } finally {
-      // ⭐️ 辨識完畢後，立刻釋放這個暫時的 Detector 資源
-      staticDetector.close();
-    }
   }
-  /// 內部工具：將 CameraImage 轉成 ML Kit 的 InputImage
-  ///
-  /// 注意：不同平台與相機格式的支援度不同，若無法轉換則回傳 null。
+
+  // 內部工具：_inputImageFromCameraImage 保持不變
   InputImage? _inputImageFromCameraImage(CameraImage image, CameraDescription camera) {
     final sensorOrientation = camera.sensorOrientation;
     InputImageRotation? rotation;
-
-    // 依據平台決定 rotation 的來源值
     if (Platform.isIOS) {
       rotation = InputImageRotationValue.fromRawValue(sensorOrientation);
     } else if (Platform.isAndroid) {
-      // Android 裝置的 rotation compensation 可能需要根據 lens direction 處理
       var rotationCompensation = 0;
       if (camera.lensDirection == CameraLensDirection.front) {
         rotationCompensation = (sensorOrientation + 0) % 360;
@@ -144,20 +182,14 @@ class ObjectDetectorService {
       }
       rotation = InputImageRotationValue.fromRawValue(rotationCompensation);
     }
-
     if (rotation == null) return null;
-
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
-
-    // 檢查是否為 ML Kit 支援的格式（此處以常見的 NV21 / BGRA8888 作為示範）
     if (format == null ||
         (Platform.isAndroid && format != InputImageFormat.nv21) &&
         (Platform.isIOS && format != InputImageFormat.bgra8888)) {
       return null;
     }
-
     if (image.planes.isEmpty) return null;
-
     return InputImage.fromBytes(
       bytes: image.planes[0].bytes,
       metadata: InputImageMetadata(

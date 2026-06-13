@@ -1,308 +1,431 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+import 'package:flutter/rendering.dart';
+
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+
+import '../tools/ai_guidance_overlay.dart';
+import '../tools/object_detector_service.dart';
+import '../tools/composition_overlay_manager.dart';
+import '../tools/camera_settings_service.dart';
+import '../tools/gemini_composition_service.dart';
 import '../providers/camera_provider.dart';
+import '../main.dart' show cameras;
 
-class CameraScreen extends StatefulWidget {
-  const CameraScreen({Key? key}) : super(key: key);
-
-  @override
-  State<CameraScreen> createState() => _CameraScreenState();
+enum CameraWorkflow {
+  live,
+  analyzing,
+  magicMoment,
+  guiding
 }
 
-class _CameraScreenState extends State<CameraScreen> {
-  bool _showCompositionGuide = true;
-  bool _showBeforeAfter = false;
+class FullScreenCameraScreen extends StatefulWidget {
+  final CameraController? cameraController;
+
+  const FullScreenCameraScreen({super.key, this.cameraController});
 
   @override
-  Widget build(BuildContext context) {
+  State<FullScreenCameraScreen> createState() => _FullScreenCameraScreenState();
+}
+
+class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
+  File? _testImageFile;
+  CameraWorkflow _workflow = CameraWorkflow.live;
+  String _subjectLabel = '分析中...';
+
+  bool _isProcessing = false; 
+  String _currentComposition = 'none'; 
+  final CameraSettingsService _cameraSettingsService = CameraSettingsService();
+  final GlobalKey _previewKey = GlobalKey();
+
+  double _subjectX = 0.5;
+  double _subjectY = 0.5;
+  double _bestX = 0.9;
+  double _bestY = 0.66;
+
+  List<Rect> _allDebugRects = [];
+  final ObjectDetectorService _detectorService = ObjectDetectorService();
+  final GeminiCompositionService _geminiService = GeminiCompositionService();
+
+  CameraController? _controller;
+  bool _isCameraInitializing = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _detectorService.initialize();
+
+    if (widget.cameraController != null) {
+      _controller = widget.cameraController;
+      _isCameraInitializing = false;
+    } else {
+      _initOwnCamera();
+    }
+  }
+
+  Future<void> _initOwnCamera() async {
+    if (cameras.isEmpty) {
+      if (mounted) setState(() => _isCameraInitializing = false);
+      return;
+    }
+
+    final backCamera = cameras.firstWhere(
+      (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => cameras.first,
+    );
+
+    final controller = CameraController(
+      backCamera,
+      ResolutionPreset.medium,
+      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+    );
+
+    try {
+      await controller.initialize();
+      if (!mounted) {
+        await controller.dispose();
+        return;
+      }
+      setState(() {
+        _controller = controller;
+        _isCameraInitializing = false;
+      });
+    } catch (e) {
+      debugPrint('相機初始化失敗: $e');
+      if (mounted) setState(() => _isCameraInitializing = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.stopImageStream();
+    _controller?.dispose();
+    _detectorService.dispose();
+    super.dispose();
+  }
+  
+  Future<void> _captureAndAskGemini() async {
+    if (_isProcessing || _workflow != CameraWorkflow.live) return;
+
+    if (!_geminiService.hasApiKey) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('找不到Gemini API Key，請確認.env設定')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isProcessing = true;
+      _workflow = CameraWorkflow.analyzing;
+    });
+
+    await _controller?.pausePreview();
+
+    try {
+      final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return;
+
+      final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      final Uint8List pngBytes = byteData!.buffer.asUint8List();
+
+      final suggestion = await _geminiService.analyzeComposition(
+        pngBytes,
+        fallbackX: _bestX,
+        fallbackY: _bestY,
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _bestX = suggestion.idealX;
+        _bestY = suggestion.idealY;
+        _currentComposition = suggestion.patternType;
+        _subjectLabel = suggestion.detectedSubject;
+        _workflow = CameraWorkflow.magicMoment;
+      });
+
+      await _cameraSettingsService.applyAISettings(
+        controller: _controller,
+        evOffset: suggestion.evOffset,
+        flashOn: suggestion.flashOn,
+        sceneMode: suggestion.sceneMode,
+        context: context,
+      );
+
+      await Future.delayed(const Duration(milliseconds: 2500));
+
+      if (!mounted) return;
+
+      await _controller?.resumePreview();
+
+      setState(() {
+        _workflow = CameraWorkflow.guiding;
+      });
+
+      if (_controller != null && _controller!.value.isStreamingImages == false) {
+        _controller?.startImageStream((image) {
+          if (!_isProcessing) {
+            _processCameraImage(image);
+          }
+        });
+      }
+    } on GeminiParseException catch (e) {
+      debugPrint('JSON Parsing Error: ${e.message}');
+      debugPrint('Raw AI Response: ${e.rawResponse}');
+      await _controller?.resumePreview();
+      if (mounted) {
+        setState(() => _workflow = CameraWorkflow.live);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('AI 分析失敗，請再試一次')));
+      }
+    } on GeminiRequestException catch (e) {
+      debugPrint('Gemini API Error: ${e.message}');
+      await _controller?.resumePreview();
+      if (mounted) {
+        setState(() => _workflow = CameraWorkflow.live);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('連線錯誤，請檢查網路狀態')));
+      }
+    } finally {
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _processCameraImage(CameraImage image) async {
+    if (!mounted) return;
+    _isProcessing = true;
+    try {
+      final result = await _detectorService.detectMainSubject(
+        image: image,
+        camera: _controller!.description,
+        deviceOrientation: MediaQuery.of(context).orientation,
+      );
+
+      if (result != null && mounted) {
+        setState(() {
+          _subjectX = result.position.dx;
+          _subjectY = result.position.dy;
+          _allDebugRects = result.allRects;
+        });
+      }
+    } catch (e) {
+      debugPrint("Object Detection Error: $e");
+    } finally {
+      _isProcessing = false;
+    }
+  }
+
+  void _runStaticImageTest() {}
+
+  Future<void> _takePicture() async {
+    final controller = _controller;
+    if (controller == null || !controller.value.isInitialized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('相機尚未初始化')),
+      );
+      return;
+    }
+    if (_isProcessing) return;
+
+    final wasStreaming = controller.value.isStreamingImages;
+    if (wasStreaming) {
+      await controller.stopImageStream();
+    }
+
+    setState(() => _isProcessing = true);
+
+    try {
+      final XFile rawFile = await controller.takePicture();
+
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final savedPath = '${directory.path}/$fileName';
+      await File(rawFile.path).copy(savedPath);
+
+      if (!mounted) return;
+      context.read<CameraProvider>().addPhoto(savedPath);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已儲存到圖庫'), backgroundColor: Colors.green),
+      );
+    } catch (e) {
+      debugPrint('拍照失敗: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('拍照失敗，請再試一次'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (wasStreaming && mounted) {
+        await controller.startImageStream((image) {
+          if (!_isProcessing) _processCameraImage(image);
+        });
+      }
+      if (mounted) setState(() => _isProcessing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {  
+    final screenSize = MediaQuery.of(context).size;
+    final aiBestPos = Offset(screenSize.width * _bestX, screenSize.height * _bestY);
+    final aiSubjectPos = Offset(screenSize.width * _subjectX, screenSize.height * _subjectY);
+
+    final showGuidance = _workflow == CameraWorkflow.magicMoment || _workflow == CameraWorkflow.guiding;
+
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            // Handle back
-          },
-        ),
-        title: const Text('智能相機'),
-        actions: [
+      backgroundColor: Colors.black,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          RepaintBoundary(
+            key: _previewKey,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                if (_controller != null && _controller!.value.isInitialized)
+                  CameraPreview(_controller!)
+                else if (_isCameraInitializing)
+                  const Center(child: CircularProgressIndicator(color: Color(0xFF0A58F5)))
+                else
+                  const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
+                
+                CompositionOverlayManager(
+                  isVisible: showGuidance,
+                  patternType: _currentComposition,
+                ),
+                
+                AIGuidanceOverlay(
+                  isVisible: showGuidance,
+                  subjectPosition: aiSubjectPos,
+                  bestPosition: aiBestPos,
+                  subjectLabel: _subjectLabel,
+                  debugRects: _allDebugRects,
+                  showSubjectAndArrow: true, 
+                ),
+
+                if (_workflow == CameraWorkflow.analyzing)
+                  Container(
+                    color: Colors.black.withOpacity(0.4),
+                    child: const Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          if (_workflow == CameraWorkflow.guiding)
+            Positioned(
+              top: 100,
+              left: 0, right: 0,
+              child: Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFF0A58F5), width: 1.5)
+                  ),
+                  child: Text(
+                    '請移動手機，將 [$_subjectLabel] 對準藍色光圈',
+                    style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ),
+
+          SafeArea(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _buildTopBar(context),
+                _buildBottomControls(context),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+ Widget _buildTopBar(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.4),
+              shape: BoxShape.circle,
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.close, color: Colors.white),
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+          ),
+          Row(
+            children: [],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomControls(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 20, left: 24, right: 24),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
           IconButton(
-            icon: const Icon(Icons.more_vert),
+            icon: const Icon(Icons.refresh, color: Colors.white),
             onPressed: () {
-              // Show options
+              if (_controller?.value.isStreamingImages == true) {
+                _controller?.stopImageStream();
+              }
+              _detectorService.resetLock();
+              setState(() {
+                _workflow = CameraWorkflow.live;
+                _currentComposition = 'none';
+                _allDebugRects = [];
+              });
             },
           ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Stack(
-              children: [
-                // Camera preview (placeholder)
-                Container(
-                  color: Colors.black,
-                  child: Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.camera_alt,
-                          size: 80,
-                          color: Colors.grey[700],
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          '相機預覽',
-                          style: TextStyle(
-                            color: Colors.grey[500],
-                            fontSize: 16,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                // Composition Guide Overlay
-                if (_showCompositionGuide)
-                  Positioned.fill(
-                    child: CompositionGuideOverlay(),
-                  ),
-                // Before/After Toggle
-                if (_showBeforeAfter)
-                  Positioned(
-                    top: 20,
-                    right: 20,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.blue,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.check, size: 16),
-                          SizedBox(width: 4),
-                          Text('編輯前後'),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          // Bottom Controls
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: const Color(0xFF2a2a2a),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.3),
-                  blurRadius: 8,
-                  offset: const Offset(0, -2),
-                ),
-              ],
-            ),
+          
+          GestureDetector(
+            onTap: _isProcessing ? null : _takePicture,
             child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                // AI Suggestion
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  width: 72, height: 72,
                   decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: Colors.blue.withOpacity(0.4),
-                    ),
+                    color: const Color(0xFF0A58F5).withOpacity(_isProcessing ? 0.5 : 1.0),
+                    shape: BoxShape.circle,
                   ),
-                  child: const Row(
-                    children: [
-                      Icon(
-                        Icons.lightbulb,
-                        color: Colors.blue,
-                        size: 16,
-                      ),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'AI 建議：試試看將主體放在左邊三分線上',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.white70,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
+                  child: const Icon(Icons.camera, color: Colors.white, size: 34),
                 ),
-                const SizedBox(height: 16),
-                // Control Buttons
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildControlButton(
-                      icon: Icons.grid_3x3,
-                      label: '網格',
-                      onTap: () {
-                        setState(() {
-                          _showCompositionGuide = !_showCompositionGuide;
-                        });
-                      },
-                    ),
-                    _buildControlButton(
-                      icon: Icons.compare,
-                      label: '對比',
-                      onTap: () {
-                        setState(() {
-                          _showBeforeAfter = !_showBeforeAfter;
-                        });
-                      },
-                    ),
-                    _buildCaptureButton(),
-                    _buildControlButton(
-                      icon: Icons.flip,
-                      label: '翻轉',
-                      onTap: () {
-                        // Flip camera
-                      },
-                    ),
-                    _buildControlButton(
-                      icon: Icons.settings,
-                      label: '設置',
-                      onTap: () {
-                        // Show settings
-                      },
-                    ),
-                  ],
-                ),
+                const SizedBox(height: 8),
               ],
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildControlButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Icon(icon, color: Colors.white, size: 24),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 10,
-              color: Colors.grey,
-            ),
+          
+          IconButton(
+            icon: _workflow == CameraWorkflow.analyzing 
+                ? const SizedBox(
+                    width: 24, height: 24,
+                    child: CircularProgressIndicator(color: Color(0xFF0A58F5), strokeWidth: 2.0),
+                  )
+                : const Icon(Icons.auto_awesome, color: Colors.white, size: 28),
+            onPressed: _captureAndAskGemini, 
           ),
         ],
       ),
     );
   }
-
-  Widget _buildCaptureButton() {
-    return GestureDetector(
-      onTap: () {
-        // Capture photo
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('照片已拍攝'),
-            duration: Duration(milliseconds: 500),
-          ),
-        );
-      },
-      child: Container(
-        width: 60,
-        height: 60,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: Colors.white,
-            width: 3,
-          ),
-        ),
-        child: Container(
-          margin: const EdgeInsets.all(3),
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.blue,
-          ),
-        ),
-      ),
-    );
-  }
 }
-
-class CompositionGuideOverlay extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: CompositionGuidePainter(),
-    );
-  }
-}
-
-class CompositionGuidePainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withOpacity(0.3)
-      ..strokeWidth = 1
-      ..style = PaintingStyle.stroke;
-
-    // Draw rule of thirds grid
-    final thirdWidth = size.width / 3;
-    final thirdHeight = size.height / 3;
-
-    // Vertical lines
-    canvas.drawLine(
-      Offset(thirdWidth, 0),
-      Offset(thirdWidth, size.height),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(thirdWidth * 2, 0),
-      Offset(thirdWidth * 2, size.height),
-      paint,
-    );
-
-    // Horizontal lines
-    canvas.drawLine(
-      Offset(0, thirdHeight),
-      Offset(size.width, thirdHeight),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(0, thirdHeight * 2),
-      Offset(size.width, thirdHeight * 2),
-      paint,
-    );
-
-    // Draw focal point indicator
-    final centerX = size.width / 2;
-    final centerY = size.height / 2;
-    final radius = 40.0;
-
-    final circlePaint = Paint()
-      ..color = Colors.amber.withOpacity(0.5)
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawCircle(Offset(centerX, centerY), radius, circlePaint);
-  }
-
-  @override
-  bool shouldRepaint(CompositionGuidePainter oldDelegate) => false;
-}
-

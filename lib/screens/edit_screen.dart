@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../providers/camera_provider.dart';
-import '../repositories/photo_repo.dart';
+// import '../repositories/photo_repo.dart';
 import '../tools/gemini_color_service.dart';
 import '../tools/image_processing_service.dart';
 import 'library_screen.dart';
@@ -112,13 +112,6 @@ class _EditScreenState extends State<EditScreen> {
     ];
   }
 
-  /// 套用所有AI建議：
-  ///
-  /// 目前還沒有真正的影像處理邏輯，先把目前的照片複製一份存成「新照片」，
-  /// 並加進圖庫清單，讓「套用」這個動作有實際可見的結果。
-  /// 之後要接上真正的影像處理時，只需要把「複製檔案」這一步，
-  /// 換成「依照cameraProvider.currentEnhancements/appliedSuggestions
-  /// 處理像素後再寫入新檔案」即可，前後的流程（存檔、加入圖庫、提示、返回）不變。
   Future<void> _applyAllSuggestions(BuildContext context, String sourcePath) async {
     if (_isSaving) return;
     setState(() => _isSaving = true);
@@ -194,7 +187,7 @@ class _EditScreenState extends State<EditScreen> {
           return Column(
             children: [
               GestureDetector(
-                onTap: () => _goToLibrary(context),
+                onTap: (){}, // TODO: link to firebase storage 
                 child: Container(
                   height: 200,
                   width: double.infinity,
