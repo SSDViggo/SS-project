@@ -6,7 +6,7 @@ class AIGuidanceOverlay extends StatelessWidget {
   final bool isVisible;
   final Offset subjectPosition;
   final Offset bestPosition;
-  
+  final List<Rect> debugRects;
   // ⭐️ 1. 新增缺少的參數
   final String subjectLabel;
   final bool showSubjectAndArrow;
@@ -18,6 +18,7 @@ class AIGuidanceOverlay extends StatelessWidget {
     required this.bestPosition,
     this.subjectLabel = '主題位置',       // 給予預設值
     this.showSubjectAndArrow = true, // 給予預設值
+    this.debugRects = const [],
   });
 
   @override
@@ -45,6 +46,7 @@ class AIGuidanceOverlay extends StatelessWidget {
             isAligned: isAligned,
             targetColor: targetColor,
             subjectColor: subjectColor,
+            debugRects: debugRects,
           ),
           size: Size.infinite,
         ),
@@ -83,6 +85,7 @@ class _AIGuidancePainter extends CustomPainter {
   final bool isAligned;
   final Color targetColor;
   final Color subjectColor;
+  final List<Rect> debugRects;
 
   _AIGuidancePainter({
     required this.subjectPos, 
@@ -91,10 +94,26 @@ class _AIGuidancePainter extends CustomPainter {
     required this.isAligned,
     required this.targetColor,
     required this.subjectColor,
+    required this.debugRects,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
+    final debugPaint = Paint()
+      ..color = Colors.redAccent.withOpacity(0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+    for (var r in debugRects) {
+      // 將正規化 (0.0~1.0) 的 Rect 放大多螢幕實際尺寸
+      final mappedRect = Rect.fromLTRB(
+        r.left * size.width,
+        r.top * size.height,
+        r.right * size.width,
+        r.bottom * size.height,
+      );
+      canvas.drawRect(mappedRect, debugPaint);
+    }
+
     // 1. 繪製目標虛線圈 (永遠顯示)
     final targetPaint = Paint()
       ..color = targetColor

@@ -51,6 +51,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   double _bestX = 0.9;
   double _bestY = 0.66;
 
+  List<Rect> _allDebugRects = [];
   final ObjectDetectorService _detectorService = ObjectDetectorService();
 
   @override
@@ -203,6 +204,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         setState(() {
           _subjectX = result.position.dx;
           _subjectY = result.position.dy;
+          _allDebugRects = result.allRects;
         });
       }
     } catch (e) {
@@ -251,6 +253,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                   bestPosition: aiBestPos,
                   subjectLabel: _subjectLabel,
                   // 不論是魔法時刻還是引導階段，都顯示黃圈跟箭頭
+                  debugRects: _allDebugRects,
                   showSubjectAndArrow: true, 
                 ),
 
