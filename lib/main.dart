@@ -6,6 +6,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'providers/camera_provider.dart';
 import 'screens/library_screen.dart';
+import 'screens/edit_screen.dart';
 // 1. 宣告全域變數來儲存設備上可用的相機列表
 List<CameraDescription> cameras = [];
 
@@ -134,15 +135,34 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
         type: BottomNavigationBarType.fixed,
         currentIndex: 0,
         onTap: (index) {
-          if (index == 1) {
-            _openCamera(context);
-          } else if (index == 2) {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (context) => const LibraryScreen(),
-              ),
-            );
+          switch(index) {
+            case 1: 
+              _openCamera(context); 
+              break;
+            case 2: 
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => const LibraryScreen(),
+                ),
+              ); 
+              break;
+            case 3: 
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => const EditScreen(),
+                ),
+              ); 
+              break;
           }
+          // if (index == 1) {
+          //   _openCamera(context);
+          // } else if (index == 2) {
+          //   Navigator.of(context).push(
+          //     MaterialPageRoute<void>(
+          //       builder: (context) => const LibraryScreen(),
+          //     ),
+          //   );
+          // }
         },
         items: const [
           BottomNavigationBarItem(

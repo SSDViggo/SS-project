@@ -16,6 +16,7 @@ import '../tools/gemini_composition_service.dart';
 import 'package:provider/provider.dart';
 import '../providers/camera_provider.dart';
 import '../screens/library_screen.dart';
+import '../screens/edit_screen.dart';
 import '../main.dart' show cameras;
 
 /// 相機畫面（全螢幕）
@@ -507,9 +508,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                   MaterialPageRoute(builder: (_) => const LibraryScreen()),
                 );
                 break;
-              case 3: // Edit（尚未實作）
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('編輯功能尚未完成')),
+              case 3: // Edit
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const EditScreen()),
                 );
                 break;
             }

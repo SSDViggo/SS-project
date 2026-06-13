@@ -15,7 +15,8 @@ main.dart
             ├─ tools/ai_guidance_overlay.dart        AI建議位置的視覺提示
             ├─ tools/gemini_composition_service.dart Gemini構圖建議（API呼叫+JSON解析）
             ├─ providers/camera_provider.dart        全域共享的「已拍照片清單」
-            └─ screens/library_screen.dart           顯示已拍攝的照片（圖庫）
+            ├─ screens/library_screen.dart           顯示已拍攝的照片（圖庫）
+            └─ screens/edit_screen.dart              根據AI以及使用者調整顯示預覽圖片
 ```
 
 **已實作的功能**
@@ -25,6 +26,7 @@ main.dart
 - Gemini AI構圖分析（含曝光/閃光燈建議）
 - 閃光燈開關、翻轉鏡頭
 - 內建測試圖片（`test_images/food1.jpg`），無相機/模擬器相機異常時可用來測試ML Kit
+- 修改圖片功能
 
 **已知限制**
 - `screens/library_screen.dart` 顯示的照片清單存在 `CameraProvider`（記憶體中），
@@ -45,7 +47,6 @@ main.dart
 services/navigation.dart
 views/
 view_models/
-repositories/
 models/
 utils/categories.dart
 ```
@@ -54,7 +55,6 @@ utils/categories.dart
 
 ```
 screens/home_screen.dart    首頁UI（與main.dart的PhotoAssistantScreen是兩套不同設計）
-screens/edit_screen.dart    編輯畫面UI
 screens/camera_screen.dart  另一套相機畫面UI（與pages/camera_scene.dart重複）
 ```
 ---
