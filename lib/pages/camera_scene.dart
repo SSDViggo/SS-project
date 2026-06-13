@@ -1,13 +1,14 @@
 import 'dart:io';
-import 'dart:ui' as ui; // 用於將RepaintBoundary畫面轉成PNG
-import 'package:flutter/rendering.dart'; // 為了使用 RenderRepaintBoundary
+import 'dart:ui' as ui;
+import 'package:flutter/rendering.dart';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 
-// 工具模組：網格、AI 引導 overlay、物件偵測、相機設定、Gemini構圖建議
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/object_detector_service.dart';
 import '../tools/composition_overlay_manager.dart';
@@ -71,7 +72,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   @override
   void initState() {
     super.initState();
-    // 初始化物件偵測 Service
     _detectorService.initialize();
 
     if (widget.cameraController != null) {
@@ -90,16 +90,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       if (mounted) setState(() => _isCameraInitializing = false);
       return;
     }
-
-    final backCamera = cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => cameras.first,
-    );
-
-    final controller = CameraController(
-      backCamera,
-      ResolutionPreset.medium,
-      imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+    _geminiModel = GenerativeModel(
+      model: 'gemini-2.5-flash-lite',
+      apiKey: apiKey,
     );
 
     try {
@@ -391,32 +384,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           ),
           Row(
             children: [
-              // 即時物件偵測開關
-              IconButton(
-                icon: Icon(
-                  Icons.center_focus_strong,
-                  color: _hasGuidance && _testImageFile == null ? const Color(0xFF0A58F5) : Colors.white,
-                ),
-                onPressed: () {
-                  if (_testImageFile != null) {
-                    setState(() => _testImageFile = null);
-                  }
-                  _toggleLiveDetection();
-                },
-              ),
-              // 閃光燈開關
-              IconButton(
-                icon: Icon(
-                  _flashMode == FlashMode.off ? Icons.flash_off : Icons.flash_on,
-                  color: _flashMode == FlashMode.off ? Colors.white : Colors.amber,
-                ),
-                onPressed: _toggleFlash,
-              ),
-              // 翻轉前後鏡頭
-              IconButton(
-                icon: const Icon(Icons.cameraswitch, color: Colors.white),
-                onPressed: _flipCamera,
-              ),
               // ⭐️ 右側對焦按鈕，加上半透明黑色圓底
               // Container(
               //   decoration: BoxDecoration(
@@ -450,8 +417,13 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         children: [
           // 重置按鈕 (可讓使用者隨時跳出引導流程回到預覽)
           IconButton(
-            icon: const Icon(Icons.image_search, color: Colors.white), // 測試圖示
-            onPressed: _runStaticImageTest, // 點擊載入 food1.jpg 測試
+            icon: const Icon(Icons.refresh, color: Colors.white),
+            onPressed: () {
+              setState(() {
+                _workflow = CameraWorkflow.live;
+                _currentComposition = 'none';
+              });
+            },
           ),
           
           // 中間快門按鈕：點擊拍照
