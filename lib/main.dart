@@ -5,7 +5,7 @@ import 'screens/camera_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'providers/camera_provider.dart';
-import 'screens/edit_screen.dart';
+import 'screens/gallery_screen.dart';
 
 import 'screens/composition_library_screen.dart';
 
@@ -94,59 +94,79 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
         ),
         centerTitle: true,
       ),
-      body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 16),
-            const Text(
-              'Your intelligent photography companion for perfect composition and professional editing',
-              style: TextStyle(
-                color: Color(0xFF8B9CB6),
-                fontSize: 15,
-                height: 1.4,
-              ),
+      // ⭐️ 核心修改：將 Body 改為單一 ListView，讓全畫面都能一起滑動
+      body: ListView(
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
+        children: [
+          const Text(
+            'Your intelligent photography companion for perfect composition and professional editing',
+            style: TextStyle(
+              color: Color(0xFF8B9CB6),
+              fontSize: 15,
+              height: 1.4,
             ),
-            const SizedBox(height: 24),
-            Expanded(
-              child: ListView(
-                physics: const BouncingScrollPhysics(),
-                children: [
-                  FeatureCard(
-                    icon: Icons.camera_alt_outlined,
-                    title: 'Smart Camera',
-                    description: 'Real-time AI guidance with composition grids and level detection',
-                    isPrimary: true,
-                    onTap: () => _openCamera(context),
-                  ),
-                  const SizedBox(height: 16),
-                  const FeatureCard(
-                    icon: Icons.auto_awesome,
-                    title: 'AI Enhancements',
-                    description: 'Intelligent post-processing suggestions and manual controls',
-                    isPrimary: false,
-                  ),
-                  const SizedBox(height: 16),
-                  FeatureCard(
-                    icon: Icons.grid_view_rounded,
-                    title: 'Composition Library',
-                    description: 'Learn composition techniques and visual guides',
-                    isPrimary: false,
-                    onTap: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (context) => const CompositionLibraryScreen(),
-                        ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 20),
-                ],
-              ),
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 24),
+          
+          // 卡片 1：智慧相機
+          FeatureCard(
+            icon: Icons.camera_alt_outlined,
+            title: 'Smart Camera',
+            description: 'Real-time AI guidance with composition grids and level detection',
+            isPrimary: true,
+            onTap: () => _openCamera(context),
+          ),
+          const SizedBox(height: 16),
+          
+          // 卡片 2：構圖庫
+          FeatureCard(
+            icon: Icons.grid_view_rounded,
+            title: 'Composition Library',
+            description: 'Learn composition techniques and visual guides',
+            isPrimary: false,
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => const CompositionLibraryScreen(),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          
+          // 卡片 3：AI 編輯 (對齊你下方的 Edit 標籤)
+          FeatureCard(
+            icon: Icons.auto_awesome,
+            title: 'AI Enhancements',
+            description: 'Intelligent post-processing suggestions and manual controls',
+            isPrimary: false,
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => const AiEditScreen(),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 16),
+          
+          // ⭐️ 新增卡片 4：我的相簿 (對齊你下方的相簿標籤)
+          FeatureCard(
+            icon: Icons.photo_library,
+            title: 'My Gallery',
+            description: 'View and manage your captured photos',
+            isPrimary: false,
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => const GalleryScreen(),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 20),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         backgroundColor: const Color(0xFF121212),
@@ -170,16 +190,17 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
             case 3: 
               Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (context) => const EditScreen(),
+                  builder: (context) => const AiEditScreen(),
                 ),
               ); 
               break;
-              // Navigator.of(context).push(
-              //   MaterialPageRoute<void>(
-              //     builder: (context) => const AiEditScreen(),
-              //   ),
-              // ); 
-              // break;
+            case 4:
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (context) => const GalleryScreen(),
+                ),
+              );
+              break;
           }
         },
         items: const [
@@ -199,11 +220,14 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
             icon: Icon(Icons.auto_awesome),
             label: 'Edit',
           ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.photo_library),
+             label: 'Gallery'
+          ),
         ],
       ),
     );
-  }
-}
+  }}
 
 class FeatureCard extends StatelessWidget {
   final IconData icon;

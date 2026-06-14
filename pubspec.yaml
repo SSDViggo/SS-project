@@ -51,6 +51,8 @@ dependencies:
   image: ^4.9.1
   firebase_storage: ^11.6.0
   gal: ^2.3.2
+  photo_manager: ^3.3.0 
+  photo_manager_image_provider: any
   
 dev_dependencies:
   flutter_test:

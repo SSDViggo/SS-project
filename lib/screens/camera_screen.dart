@@ -197,7 +197,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       });
 
       // ⭐️ 關鍵新增：把大腦 (Gemini) 認出來的標籤，告訴眼睛 (ML Kit)
-      _detectorService.updateTargetLabel(suggestion.detectedSubject);
+      // _detectorService.updateTargetLabel(suggestion.detectedSubject);
 
       await _cameraSettingsService.applyAISettings(
         controller: _controller,
