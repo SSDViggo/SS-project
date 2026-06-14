@@ -11,7 +11,7 @@ import '../tools/gemini_style_transfer_service.dart';
 import '../tools/unsplash_service.dart';
 import '../tools/image_processing_service.dart';
 import 'camera_screen.dart';
-import 'library_screen.dart';
+import 'gallery_screen.dart';
 
 /// AI智能增強／編輯畫面（agentic版本）。
 ///
@@ -210,7 +210,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
   void _goToLibrary(BuildContext context) {
     Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const LibraryScreen()),
+      MaterialPageRoute(builder: (_) => const GalleryScreen()),
     );
   }
 
@@ -381,7 +381,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
                 onPressed: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const LibraryScreen()),
+                    MaterialPageRoute(builder: (_) => const GalleryScreen()),
                   );
                 },
               ),

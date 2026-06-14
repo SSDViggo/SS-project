@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 
+import 'diagonal_lines_grid.dart'; 
+import 'rule_of_thirds_grid.dart';
+
 /// 構圖網格管理器 (供 AI Agent 動態切換構圖線使用)
 class CompositionOverlayManager extends StatelessWidget {
-  /// 支援的 pattern: 'rule_of_thirds', 's_curve', 'triangle', 'symmetry', 'none'
+  /// 支援的 pattern: 對應 Prompt 中的所有 Tool_ID
   final String patternType;
   final bool isVisible;
 
@@ -16,6 +19,16 @@ class CompositionOverlayManager extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!isVisible || patternType == 'none') return const SizedBox.shrink();
 
+    // ⭐️ 1. 已經獨立成 Widget 的高階構圖輔助線
+    if (patternType == 'Portrait_RuleOfThirds' || patternType == 'Landscape_RuleOfThirds') {
+      return const RuleOfThirdsGrid();
+    }
+    
+    if (patternType == 'Food_Diagonal' || patternType == 'Landscape_LeadingLines') {
+      return const DiagonalLinesGrid();
+    }
+
+    // ⭐️ 2. 基礎幾何線，交由 CustomPainter 動態繪製
     return CustomPaint(
       painter: _CompositionPainter(patternType: patternType),
       size: Size.infinite,
@@ -36,59 +49,43 @@ class _CompositionPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5;
 
+    // 根據 AI 回傳的 Tool_ID 畫出對應的線條
     switch (patternType) {
-      case 'rule_of_thirds':
-        _drawRuleOfThirds(canvas, size, paint);
-        break;
-      case 's_curve':
-        _drawSCurve(canvas, size, paint);
-        break;
-      case 'triangle':
-        _drawTriangle(canvas, size, paint);
-        break;
-      case 'symmetry':
+      case 'Food_Centered':
+      case 'Landscape_Symmetry':
+      case 'Food_FlatLay':
         _drawSymmetry(canvas, size, paint);
+        break;
+      case 'Portrait_Framing':
+        _drawFraming(canvas, size, paint);
+        break;
+      case 'Portrait_NegativeSpace':
+        _drawNegativeSpace(canvas, size, paint);
         break;
       default:
         break;
     }
   }
 
-  void _drawRuleOfThirds(Canvas canvas, Size size, Paint paint) {
-    double stepX = size.width / 3;
-    double stepY = size.height / 3;
-    for (int i = 1; i < 3; i++) {
-      canvas.drawLine(Offset(stepX * i, 0), Offset(stepX * i, size.height), paint);
-      canvas.drawLine(Offset(0, stepY * i), Offset(size.width, stepY * i), paint);
-    }
-  }
-
-  void _drawSCurve(Canvas canvas, Size size, Paint paint) {
-    // 繪製一條從左下到右上的 S 型貝茲曲線 (Bezier Curve)
-    final path = Path();
-    path.moveTo(size.width * 0.1, size.height * 0.9);
-    path.cubicTo(
-      size.width * 0.8, size.height * 0.7, // 控制點 1
-      size.width * 0.2, size.height * 0.3, // 控制點 2
-      size.width * 0.9, size.height * 0.1, // 終點
-    );
-    canvas.drawPath(path, paint);
-  }
-
-  void _drawTriangle(Canvas canvas, Size size, Paint paint) {
-    // 繪製正三角形構圖輔助線
-    final path = Path();
-    path.moveTo(size.width * 0.5, size.height * 0.2); // 頂點
-    path.lineTo(size.width * 0.1, size.height * 0.8); // 左下
-    path.lineTo(size.width * 0.9, size.height * 0.8); // 右下
-    path.close();
-    canvas.drawPath(path, paint);
-  }
-
+  /// 中心對稱十字線 (對應 Food_Centered, Landscape_Symmetry, Food_FlatLay)
   void _drawSymmetry(Canvas canvas, Size size, Paint paint) {
-    // 繪製中心十字對稱線
     canvas.drawLine(Offset(size.width / 2, 0), Offset(size.width / 2, size.height), paint);
     canvas.drawLine(Offset(0, size.height / 2), Offset(size.width, size.height / 2), paint);
+  }
+
+  /// 框架構圖 (對應 Portrait_Framing) - 畫一個距離邊緣內縮的方框
+  void _drawFraming(Canvas canvas, Size size, Paint paint) {
+    final rect = Rect.fromLTWH(
+      size.width * 0.15, size.height * 0.15,
+      size.width * 0.7, size.height * 0.7
+    );
+    canvas.drawRect(rect, paint);
+  }
+
+  /// 留白構圖 (對應 Portrait_NegativeSpace) - 畫出兩條垂直分割線提示左右區域
+  void _drawNegativeSpace(Canvas canvas, Size size, Paint paint) {
+    canvas.drawLine(Offset(size.width / 3, 0), Offset(size.width / 3, size.height), paint);
+    canvas.drawLine(Offset(size.width * 2 / 3, 0), Offset(size.width * 2 / 3, size.height), paint);
   }
 
   @override

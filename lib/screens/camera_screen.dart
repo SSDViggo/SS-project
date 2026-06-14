@@ -11,7 +11,6 @@ import 'package:provider/provider.dart';
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/agent_thinking_log.dart';
 import '../tools/composition_overlay_manager.dart';
-import '../tools/camera_settings_service.dart';
 import '../tools/gemini_composition_service.dart';
 import '../providers/camera_provider.dart';
 import '../main.dart' show cameras;
@@ -37,7 +36,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   bool _isProcessing = false;
   bool _isThinking = false;
   String _currentComposition = 'none';
-  final CameraSettingsService _cameraSettingsService = CameraSettingsService();
   final GlobalKey _previewKey = GlobalKey();
 
   Rect? _currentSubjectRect;
@@ -199,13 +197,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       // ⭐️ 關鍵新增：把大腦 (Gemini) 認出來的標籤，告訴眼睛 (ML Kit)
       // _detectorService.updateTargetLabel(suggestion.detectedSubject);
 
-      await _cameraSettingsService.applyAISettings(
-        controller: _controller,
-        evOffset: 0.0,
-        flashOn: false,
-        sceneMode: 'auto',
-        context: context,
-      );
     } on GeminiParseException catch (e) {
       debugPrint('JSON Parsing Error: ${e.message}');
       debugPrint('Raw AI Response: ${e.rawResponse}');
@@ -442,18 +433,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                       ),
                     ),
                   ),
-
-                AIGuidanceOverlay(
-                  isVisible: showGuidance,
-                  currentRect: _workflow == CameraWorkflow.magicMoment
-                      ? yellowRect
-                      : null,
-                  targetRect: blueRect,
-                  subjectLabel: _subjectLabel,
-                  guideLines: _workflow == CameraWorkflow.magicMoment
-                      ? _guideLines
-                      : [],
-                ),
 
                 CompositionOverlayManager(
                   isVisible: showGuidance,
