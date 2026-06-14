@@ -17,7 +17,16 @@ class DetectionResult {
 class ObjectDetectorService {
   late ObjectDetector _objectDetector;
   bool _isInitialized = false;
-  Offset? _lockedCenterRaw; 
+  
+  // 改用 Tracking ID 來死死咬住目標
+  int? _lockedTrackingId; 
+  // 儲存 Gemini 傳來的精準標籤
+  String _targetLabel = '尋找目標中...'; 
+
+  // EMA 平滑追蹤狀態
+  double? _smoothedX;
+  double? _smoothedY;
+  final double _alpha = 0.25; // 平滑係數：數值越小越滑順，但也越遲鈍
 
   void initialize() {
     final options = ObjectDetectorOptions(
@@ -25,7 +34,6 @@ class ObjectDetectorService {
       classifyObjects: true,  
       multipleObjects: true,  
     );
-
     _objectDetector = ObjectDetector(options: options);
     _isInitialized = true;
   }
@@ -35,12 +43,20 @@ class ObjectDetectorService {
       _objectDetector.close();
       _isInitialized = false;
     }
-    _lockedCenterRaw = null;
+    resetLock();
   }
 
-  // 讓外部強制放棄目標
+  // 清除鎖定狀態
   void resetLock() {
-    _lockedCenterRaw = null;
+    _lockedTrackingId = null;
+    _targetLabel = '尋找目標中...';
+    _smoothedX = null;
+    _smoothedY = null;
+  }
+
+  // ⭐️ 新增：讓外部 (Gemini) 告訴 Service 目標叫什麼名字
+  void updateTargetLabel(String label) {
+    _targetLabel = label;
   }
 
   Future<DetectionResult?> detectMainSubject({
@@ -56,15 +72,15 @@ class ObjectDetectorService {
     final List<DetectedObject> objects = await _objectDetector.processImage(inputImage);
 
     if (objects.isEmpty) {
-      _lockedCenterRaw = null;
+      // 畫面中完全沒東西時，不要馬上解除鎖定，可以容忍短暫丟失
       return null;
     }
 
     final imgWidth = image.width.toDouble();
     final imgHeight = image.height.toDouble();
-
     final sensorOrientation = camera.sensorOrientation;
     var rotationCompensation = 0;
+    
     if (Platform.isAndroid) {
       if (camera.lensDirection == CameraLensDirection.front) {
         rotationCompensation = (sensorOrientation + 0) % 360;
@@ -75,59 +91,45 @@ class ObjectDetectorService {
       rotationCompensation = sensorOrientation;
     }
 
-    // ⭐️ 核心修正：避免「重複旋轉」陷阱
-    // ML Kit 吐出來的 BoundingBox 已經是轉正的，X 跟 Y 不用再互換。
-    // 我們只需要定義「轉正後」的畫布寬高是多少，用來做百分比除法即可。
     double domainWidth = imgWidth;
     double domainHeight = imgHeight;
     
-    // 手機直拿時，感光元件通常是橫的 (90 或 270 度)
     if (rotationCompensation == 90 || rotationCompensation == 270) {
-      domainWidth = imgHeight;   // 原本的短邊變成轉正後的寬
-      domainHeight = imgWidth;   // 原本的長邊變成轉正後的高
+      domainWidth = imgHeight;
+      domainHeight = imgWidth;
     }
 
-    // ⭐️ 史上最乾淨的座標轉換
     Offset transform(double rawPxX, double rawPxY) {
       double nx = rawPxX / domainWidth;
       double ny = rawPxY / domainHeight;
-
-      // 只有前鏡頭需要左右鏡像翻轉
       if (camera.lensDirection == CameraLensDirection.front) {
         nx = 1.0 - nx;
       }
       return Offset(nx, ny);
     }
 
-    // 收集所有框供 Debug 顯示
     List<Rect> allNormalizedRects = [];
     for (var obj in objects) {
       final r = obj.boundingBox;
-      final p1 = transform(r.left, r.top);
-      final p2 = transform(r.right, r.bottom);
-      allNormalizedRects.add(Rect.fromPoints(p1, p2)); 
+      allNormalizedRects.add(Rect.fromPoints(
+        transform(r.left, r.top), 
+        transform(r.right, r.bottom)
+      )); 
     }
 
     // --- 尋找與鎖定邏輯 ---
     DetectedObject? targetObject;
     
-    // 1. 死死咬住舊目標
-    if (_lockedCenterRaw != null) {
-      double minDistance = double.infinity;
-      for (var obj in objects) {
-        final rect = obj.boundingBox;
-        final cx = rect.left + (rect.width / 2);
-        final cy = rect.top + (rect.height / 2);
-        double distSq = pow(cx - _lockedCenterRaw!.dx, 2) + pow(cy - _lockedCenterRaw!.dy, 2).toDouble();
-
-        if (distSq < minDistance && distSq < (domainWidth * domainWidth * 0.15)) { 
-          minDistance = distSq;
-          targetObject = obj;
-        }
+    // 1. 優先透過 Tracking ID 尋找舊目標 (無視距離，死死咬住)
+    if (_lockedTrackingId != null) {
+      try {
+        targetObject = objects.firstWhere((obj) => obj.trackingId == _lockedTrackingId);
+      } catch (_) {
+        // 在這幀丟失了該 ID，保持 targetObject 為 null
       }
     }
 
-    // 2. 初次鎖定：嚴格挑選「最靠近畫面正中間」的物體
+    // 2. 初次鎖定，或目標丟失時：挑選最靠近畫面正中間的物體重新鎖定
     if (targetObject == null) {
       double bestDist = double.infinity;
       final centerImageX = domainWidth / 2;
@@ -146,28 +148,39 @@ class ObjectDetectorService {
         }
       }
       targetObject ??= objects.first;
+      
+      // 更新追蹤 ID
+      _lockedTrackingId = targetObject.trackingId;
     }
 
-    // 更新鎖定中心
+    // --- 計算座標與 EMA 平滑化 ---
     final rect = targetObject.boundingBox;
     final centerX = rect.left + (rect.width / 2);
     final centerY = rect.top + (rect.height / 2);
-    _lockedCenterRaw = Offset(centerX, centerY);
+    final rawPos = transform(centerX, centerY);
 
-    String detectedLabel = '鎖定目標';
-    if (targetObject.labels.isNotEmpty) {
-      detectedLabel = targetObject.labels.first.text;
+    if (_smoothedX == null || _smoothedY == null) {
+      // 第一次抓到，直接賦值
+      _smoothedX = rawPos.dx;
+      _smoothedY = rawPos.dy;
+    } else {
+      // 套用 EMA 平滑演算法
+      _smoothedX = _alpha * rawPos.dx + (1 - _alpha) * _smoothedX!;
+      _smoothedY = _alpha * rawPos.dy + (1 - _alpha) * _smoothedY!;
     }
 
-    final finalPos = transform(centerX, centerY);
+    // 如果 Gemini 還沒給標籤，就先用 ML Kit 內建的擋一下
+    String displayLabel = _targetLabel;
+    if (_targetLabel == '尋找目標中...' && targetObject.labels.isNotEmpty) {
+      displayLabel = targetObject.labels.first.text;
+    }
 
     return DetectionResult(
-      position: finalPos,
-      label: detectedLabel,
+      position: Offset(_smoothedX!, _smoothedY!),
+      label: displayLabel,
       allRects: allNormalizedRects,
     );
   }
-
   // 內部工具：_inputImageFromCameraImage 保持不變
   InputImage? _inputImageFromCameraImage(CameraImage image, CameraDescription camera) {
     final sensorOrientation = camera.sensorOrientation;

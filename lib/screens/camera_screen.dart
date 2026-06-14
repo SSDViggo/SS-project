@@ -110,7 +110,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   @override
   void dispose() {
-    _controller?.stopImageStream();
+    if (_controller?.value.isStreamingImages == true) {
+      _controller?.stopImageStream();
+    }
     _controller?.dispose();
     // _detectorService.dispose();
     super.dispose();
@@ -193,6 +195,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
         _currentComposition = suggestion.actionPlan.selectedTool;
         _isThinking = true;
       });
+
+      // ⭐️ 關鍵新增：把大腦 (Gemini) 認出來的標籤，告訴眼睛 (ML Kit)
+      _detectorService.updateTargetLabel(suggestion.detectedSubject);
 
       await _cameraSettingsService.applyAISettings(
         controller: _controller,

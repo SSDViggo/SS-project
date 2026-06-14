@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 
 class CompositionTechnique {
   final String title;
@@ -74,7 +75,7 @@ class CompositionLibraryScreen extends StatelessWidget {
       category: 'Landscape',
       labelText: '地平三分',
       detailText: '地平線與主題依三分法安排，畫面平衡又舒適。前景與遠景的層次更明確，能帶出更強的空間感與視覺節奏。',
-      imageAsset: 'assets/library/landscape/landscape-rule of third.jpg',
+      imageAsset: 'assets/library/landscape/landscape-rule of third.png',
     ),
     CompositionTechnique(
       title: '對稱構圖',
@@ -92,13 +93,40 @@ class CompositionLibraryScreen extends StatelessWidget {
     ),
   ];
 
-  void _openTechniqueDetail(BuildContext context, List<CompositionTechnique> items, int startIndex) {
+  Future<void> _openTechniqueDetail(BuildContext context, List<CompositionTechnique> items, int startIndex) async {
+    // Precache the tapped image to avoid hero stutter on first open
+    try {
+      await precacheImage(AssetImage(items[startIndex].imageAsset), context);
+    } catch (_) {
+      // ignore cache errors, continue to open page
+    }
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (context) => CompositionDetailScreen(
+      PageRouteBuilder<void>(
+        transitionDuration: const Duration(milliseconds: 760),
+        reverseTransitionDuration: const Duration(milliseconds: 520),
+        pageBuilder: (context, animation, secondaryAnimation) => CompositionDetailScreen(
           items: items,
           initialIndex: startIndex,
         ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          final fade = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOut,
+          );
+          final scale = Tween<double>(begin: 0.98, end: 1.0).animate(
+            CurvedAnimation(
+              parent: animation,
+              curve: const Interval(0.0, 0.75, curve: Curves.easeOutBack),
+            ),
+          );
+          return FadeTransition(
+            opacity: fade,
+            child: ScaleTransition(
+              scale: scale,
+              child: child,
+            ),
+          );
+        },
       ),
     );
   }
@@ -115,15 +143,6 @@ class CompositionLibraryScreen extends StatelessWidget {
             icon: const Icon(Icons.arrow_back),
             onPressed: () => Navigator.of(context).pop(),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text(
-                '返回主畫面',
-                style: TextStyle(color: Colors.white),
-              ),
-            ),
-          ],
           bottom: TabBar(
             isScrollable: true,
             indicatorColor: const Color(0xFF0A58F5),
@@ -191,26 +210,29 @@ class CompositionCard extends StatelessWidget {
             Expanded(
               child: ClipRRect(
                 borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
-                child: Image.asset(
-                  technique.imageAsset,
-                  fit: BoxFit.cover,
-                  cacheWidth: 400,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: const Color(0xFF2A2A2A),
-                      child: Center(
-                        child: Icon(
-                          technique.category == 'Portrait'
-                              ? Icons.person_outline
-                              : technique.category == 'Food'
-                                  ? Icons.fastfood
-                                  : Icons.landscape,
-                          color: Colors.white30,
-                          size: 44,
+                child: Hero(
+                  tag: technique.imageAsset,
+                  child: Image.asset(
+                    technique.imageAsset,
+                    fit: BoxFit.cover,
+                    cacheWidth: 400,
+                    errorBuilder: (context, error, stackTrace) {
+                      return Container(
+                        color: const Color(0xFF2A2A2A),
+                        child: Center(
+                          child: Icon(
+                            technique.category == 'Portrait'
+                                ? Icons.person_outline
+                                : technique.category == 'Food'
+                                    ? Icons.fastfood
+                                    : Icons.landscape,
+                            color: Colors.white30,
+                            size: 44,
+                          ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
@@ -258,31 +280,112 @@ class CompositionDetailScreen extends StatefulWidget {
   State<CompositionDetailScreen> createState() => _CompositionDetailScreenState();
 }
 
-class _CompositionDetailScreenState extends State<CompositionDetailScreen> {
+class _CompositionDetailScreenState extends State<CompositionDetailScreen> with TickerProviderStateMixin {
   late int currentIndex;
   int selectedRating = 0;
   bool showText = true;
+  int lastIndex = 0;
+  int transitionDirection = 1; // 1 = forward, -1 = backward
+  late final AnimationController _textController;
+  late Animation<Offset> _textOffsetAnim;
+  late Animation<double> _textOpacityAnim;
+  late Animation<Offset> _outgoingTextOffsetAnim;
+  late Animation<double> _outgoingTextOpacityAnim;
+  late final AnimationController _imageController;
+  late Animation<Offset> _incomingImageOffset;
+  late Animation<Offset> _outgoingImageOffset;
 
   @override
   void initState() {
     super.initState();
     currentIndex = widget.initialIndex;
+    lastIndex = currentIndex;
+    _textController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+    _imageController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+    _prepareTextAnimations();
+    _prepareImageAnimations();
+  }
+
+  void _prepareImageAnimations() {
+    const gapWidth = 0.33;
+    final dir = transitionDirection.toDouble();
+    _outgoingImageOffset = _imageController.drive(
+      Tween<Offset>(begin: Offset.zero, end: Offset((-1.0 - gapWidth) * dir, 0)).chain(
+        CurveTween(curve: Curves.easeInOut),
+      ),
+    );
+    _incomingImageOffset = _imageController.drive(
+      Tween<Offset>(begin: Offset((1.0 + gapWidth) * dir, 0), end: Offset.zero).chain(
+        CurveTween(curve: Curves.easeInOut),
+      ),
+    );
   }
 
   void _showPrevious() {
     if (currentIndex > 0) {
       setState(() {
+        transitionDirection = -1;
+        lastIndex = currentIndex;
         currentIndex -= 1;
       });
+      _startImageAnimation();
+      _startTextAnimation();
     }
   }
 
   void _showNext() {
     if (currentIndex < widget.items.length - 1) {
       setState(() {
+        transitionDirection = 1;
+        lastIndex = currentIndex;
         currentIndex += 1;
       });
+      _startImageAnimation();
+      _startTextAnimation();
     }
+  }
+
+  void _prepareTextAnimations() {
+    final dir = transitionDirection.toDouble();
+    _outgoingTextOffsetAnim = _textController.drive(
+      Tween<Offset>(begin: Offset.zero, end: Offset(dir * 1.0, 0)).chain(
+        CurveTween(curve: Curves.easeInOut),
+      ),
+    );
+    _outgoingTextOpacityAnim = _textController.drive(
+      Tween<double>(begin: 1.0, end: 0.0).chain(
+        CurveTween(curve: const Interval(0.0, 0.6, curve: Curves.easeIn)),
+      ),
+    );
+    _textOffsetAnim = _textController.drive(
+      Tween<Offset>(begin: Offset(-dir * 1.0, 0), end: Offset.zero).chain(
+        CurveTween(curve: Curves.easeInOutCubic),
+      ),
+    );
+    _textOpacityAnim = _textController.drive(
+      Tween<double>(begin: 0.0, end: 1.0).chain(
+        CurveTween(curve: const Interval(0.4, 1.0, curve: Curves.easeOut)),
+      ),
+    );
+  }
+
+  void _startTextAnimation() {
+    if (!mounted) return;
+    _textController.reset();
+    _prepareTextAnimations();
+    _textController.forward();
+  }
+
+  void _startImageAnimation() {
+    if (!mounted) return;
+    _imageController.reset();
+    _prepareImageAnimations();
+    _imageController.forward().whenComplete(() {
+      if (!mounted) return;
+      setState(() {
+        lastIndex = currentIndex;
+      });
+    });
   }
 
   void _rate(int rating) {
@@ -308,46 +411,159 @@ class _CompositionDetailScreenState extends State<CompositionDetailScreen> {
       body: Column(
         children: [
           Expanded(
-            child: Center(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: Image.asset(
-                  technique.imageAsset,
-                  fit: BoxFit.cover,
-                  width: double.infinity,
-                  cacheWidth: 1080,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: const Color(0xFF2A2A2A),
-                      child: const Center(
-                        child: Icon(
-                          Icons.broken_image,
-                          color: Colors.white30,
-                          size: 56,
+            child: Column(
+              children: [
+                const SizedBox(height: 20),
+                // Image area: outgoing/new stacked only during page navigation inside detail
+                Expanded(
+                  flex: 5,
+                  child: Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: lastIndex != currentIndex
+                              ? Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    SlideTransition(
+                                      position: _outgoingImageOffset,
+                                      child: Hero(
+                                        tag: widget.items[lastIndex].imageAsset,
+                                        child: Image.asset(
+                                          widget.items[lastIndex].imageAsset,
+                                          fit: BoxFit.cover,
+                                          width: double.infinity,
+                                          cacheWidth: 1080,
+                                        ),
+                                      ),
+                                    ),
+                                    SlideTransition(
+                                      position: _incomingImageOffset,
+                                      child: Hero(
+                                        tag: widget.items[currentIndex].imageAsset,
+                                        child: Image.asset(
+                                          widget.items[currentIndex].imageAsset,
+                                          fit: BoxFit.cover,
+                                          width: double.infinity,
+                                          cacheWidth: 1080,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Hero(
+                                  tag: widget.items[currentIndex].imageAsset,
+                                  child: Image.asset(
+                                    widget.items[currentIndex].imageAsset,
+                                    fit: BoxFit.cover,
+                                    width: double.infinity,
+                                    cacheWidth: 1080,
+                                  ),
+                                ),
                         ),
                       ),
-                    );
-                  },
+                    ),
+                  ),
                 ),
-              ),
+                // Text area: outgoing and incoming stacked during page navigation, otherwise entry text uses route animation
+                if (showText)
+                  Expanded(
+                    flex: 2,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Center(
+                        child: FractionallySizedBox(
+                          widthFactor: 0.94,
+                          child: lastIndex != currentIndex
+                              ? Stack(
+                                  children: [
+                                    SlideTransition(
+                                      position: _outgoingTextOffsetAnim,
+                                      child: FadeTransition(
+                                        opacity: _outgoingTextOpacityAnim,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(18),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xCC4A4A4A),
+                                            borderRadius: BorderRadius.circular(16),
+                                          ),
+                                          child: Text(
+                                            widget.items[lastIndex].detailText,
+                                            style: const TextStyle(color: Colors.white, fontSize: 18, height: 1.5),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    SlideTransition(
+                                      position: _textOffsetAnim,
+                                      child: FadeTransition(
+                                        opacity: _textOpacityAnim,
+                                        child: Container(
+                                          padding: const EdgeInsets.all(18),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xCC4A4A4A),
+                                            borderRadius: BorderRadius.circular(16),
+                                          ),
+                                          child: Text(
+                                            widget.items[currentIndex].detailText,
+                                            style: const TextStyle(color: Colors.white, fontSize: 18, height: 1.5),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Builder(
+                                  builder: (context) {
+                                    final Animation<double>? routeAnimation = ModalRoute.of(context)?.animation;
+                                    if (routeAnimation == null) {
+                                      return Container(
+                                        padding: const EdgeInsets.all(18),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xCC4A4A4A),
+                                          borderRadius: BorderRadius.circular(16),
+                                        ),
+                                        child: Text(
+                                          widget.items[currentIndex].detailText,
+                                          style: const TextStyle(color: Colors.white, fontSize: 18, height: 1.5),
+                                        ),
+                                      );
+                                    }
+                                    return SlideTransition(
+                                      position: routeAnimation.drive(
+                                        Tween<Offset>(begin: const Offset(-0.75, 0), end: Offset.zero).chain(
+                                          CurveTween(curve: Curves.easeOutCubic),
+                                        ),
+                                      ),
+                                      child: FadeTransition(
+                                        opacity: routeAnimation.drive(
+                                          CurveTween(curve: Curves.easeOut),
+                                        ),
+                                        child: Container(
+                                          padding: const EdgeInsets.all(18),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xCC4A4A4A),
+                                            borderRadius: BorderRadius.circular(16),
+                                          ),
+                                          child: Text(
+                                            widget.items[currentIndex].detailText,
+                                            style: const TextStyle(color: Colors.white, fontSize: 18, height: 1.5),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
-          if (showText)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(18),
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                color: const Color(0xCC4A4A4A),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
-                technique.detailText,
-                style: const TextStyle(color: Colors.white, fontSize: 18, height: 1.5),
-              ),
-            ),
-          const SizedBox(height: 16),
         ],
       ),
       bottomNavigationBar: Container(
@@ -414,5 +630,12 @@ class _CompositionDetailScreenState extends State<CompositionDetailScreen> {
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    _imageController.dispose();
+    super.dispose();
   }
 }
