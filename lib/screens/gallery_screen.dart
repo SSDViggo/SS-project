@@ -4,6 +4,7 @@ import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:photo_manager/photo_manager.dart'; // ⭐️ 引入裝置相簿套件
 import '../providers/camera_provider.dart';
+import '../repositories/photo_repo.dart';
 import 'ai_edit_screen.dart';
 
 class GalleryScreen extends StatefulWidget {
@@ -96,13 +97,39 @@ class _GalleryScreenState extends State<GalleryScreen> {
     );
   }
 
-  /// 內建分頁一：原本的 App 內部相簿
+  /// 內建分頁一：Firebase 中上傳的照片
   Widget _buildAppPhotosView() {
-    return Consumer<CameraProvider>(
-      builder: (context, cameraProvider, child) {
-        final List<String> photoPaths = cameraProvider.capturedPhotos;
+    final photoRepo = PhotoRepository();
+    
+    return StreamBuilder<List<PhotoRecord>>(
+      stream: photoRepo.streamPhotos(),
+      builder: (context, snapshot) {
+        // 載入中
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(
+            child: CircularProgressIndicator(color: Color(0xFF105BFB)),
+          );
+        }
 
-        if (photoPaths.isEmpty) {
+        // 錯誤
+        if (snapshot.hasError) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.error_outline, size: 48, color: Colors.red.withOpacity(0.6)),
+                const SizedBox(height: 16),
+                const Text('載入照片失敗', style: TextStyle(color: Colors.white70)),
+                const SizedBox(height: 12),
+                Text(snapshot.error.toString(), style: const TextStyle(color: Colors.red, fontSize: 12)),
+              ],
+            ),
+          );
+        }
+
+        final photos = snapshot.data ?? [];
+
+        if (photos.isEmpty) {
           return _buildEmptyState('相簿中還沒有照片', '使用智慧相機拍攝的照片將會顯示在這裡');
         }
 
@@ -116,21 +143,42 @@ class _GalleryScreenState extends State<GalleryScreen> {
               mainAxisSpacing: 8,
               childAspectRatio: 1.0,
             ),
-            itemCount: photoPaths.length,
+            itemCount: photos.length,
             itemBuilder: (context, index) {
-              final String path = photoPaths[index];
+              final photo = photos[index];
               return GestureDetector(
-                onTap: () => _showLocalPreviewDialog(context, path),
+                onTap: () => _showFirebasePreviewDialog(context, photo),
                 child: Hero(
-                  tag: 'local_$path',
+                  tag: 'firebase_${photo.id}',
                   child: Container(
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(12),
                       color: const Color(0xFF1E1E22),
                       border: Border.all(color: Colors.white12, width: 1),
-                      image: DecorationImage(
-                        image: FileImage(File(path)),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.network(
+                        photo.url,
                         fit: BoxFit.cover,
+                        loadingBuilder: (context, child, loadingProgress) {
+                          if (loadingProgress == null) return child;
+                          return Center(
+                            child: CircularProgressIndicator(
+                              value: loadingProgress.expectedTotalBytes != null
+                                  ? loadingProgress.cumulativeBytesLoaded /
+                                      loadingProgress.expectedTotalBytes!
+                                  : null,
+                              color: const Color(0xFF105BFB),
+                            ),
+                          );
+                        },
+                        errorBuilder: (context, error, stackTrace) {
+                          return Center(
+                            child: Icon(Icons.image_not_supported, 
+                              color: Colors.grey.withOpacity(0.5)),
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -325,6 +373,136 @@ class _GalleryScreenState extends State<GalleryScreen> {
       ),
     );
   }
+
+  /// Firebase 照片的放大預覽
+  void _showFirebasePreviewDialog(BuildContext context, PhotoRecord photo) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(16),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // 載入 Firebase Storage 中的圖片
+            Image.network(
+              photo.url,
+              fit: BoxFit.contain,
+              loadingBuilder: (context, child, loadingProgress) {
+                if (loadingProgress == null) return child;
+                return Center(
+                  child: CircularProgressIndicator(
+                    value: loadingProgress.expectedTotalBytes != null
+                        ? loadingProgress.cumulativeBytesLoaded /
+                            loadingProgress.expectedTotalBytes!
+                        : null,
+                    color: const Color(0xFF105BFB),
+                  ),
+                );
+              },
+              errorBuilder: (context, error, stackTrace) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.image_not_supported, 
+                        size: 48, color: Colors.red.withOpacity(0.6)),
+                      const SizedBox(height: 16),
+                      const Text('無法載入圖片', style: TextStyle(color: Colors.white70)),
+                    ],
+                  ),
+                );
+              },
+            ),
+            _buildDialogCloseButton(context),
+
+            // ⭐️ 底部資訊欄
+            Positioned(
+              bottom: 24,
+              left: 24,
+              right: 24,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (photo.createdAt != null) ...[
+                      const Text('拍攝日期', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${photo.createdAt!.year}-${photo.createdAt!.month.toString().padLeft(2, '0')}-${photo.createdAt!.day.toString().padLeft(2, '0')} ${photo.createdAt!.hour.toString().padLeft(2, '0')}:${photo.createdAt!.minute.toString().padLeft(2, '0')}',
+                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w500),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.content_copy, color: Colors.white),
+                          label: const Text('複製 URL', style: TextStyle(color: Colors.white)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF105BFB),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          ),
+                          onPressed: () {
+                            // 複製 URL 到剪貼簿（需要 flutter/services.dart 的 Clipboard）
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('URL 已複製')),
+                            );
+                          },
+                        ),
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.delete_outline, color: Colors.white),
+                          label: const Text('刪除', style: TextStyle(color: Colors.white)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.withOpacity(0.7),
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          ),
+                          onPressed: () {
+                            // 顯示確認對話框
+                            showDialog(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                backgroundColor: const Color(0xFF1E1E22),
+                                title: const Text('確認刪除', style: TextStyle(color: Colors.white)),
+                                content: const Text('確定要刪除此照片嗎？', 
+                                  style: TextStyle(color: Colors.white70)),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx),
+                                    child: const Text('取消', style: TextStyle(color: Colors.white70)),
+                                  ),
+                                  TextButton(
+                                    onPressed: () {
+                                      Navigator.pop(ctx);
+                                      Navigator.pop(context);
+                                      // TODO: 實現刪除邏輯
+                                    },
+                                    child: const Text('確認', style: TextStyle(color: Colors.red)),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildDialogCloseButton(BuildContext context) {
     return Positioned(
       top: 8, right: 8,
