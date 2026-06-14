@@ -1,194 +1,130 @@
-import 'dart:math';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'gemini_composition_service.dart';
 
-/// AI 構圖指引覆蓋層 (加入遊戲化對齊解鎖特效)
 class AIGuidanceOverlay extends StatelessWidget {
   final bool isVisible;
-  final Offset subjectPosition;
-  final Offset bestPosition;
-  final List<Rect> debugRects;
-  // ⭐️ 1. 新增缺少的參數
+  final Rect? currentRect; 
+  final Rect? targetRect;  
   final String subjectLabel;
-  final bool showSubjectAndArrow;
+  final List<GuideLine>? guideLines;
 
   const AIGuidanceOverlay({
     super.key,
-    this.isVisible = true,
-    required this.subjectPosition,
-    required this.bestPosition,
-    this.subjectLabel = '主題位置',       // 給予預設值
-    this.showSubjectAndArrow = true, // 給予預設值
-    this.debugRects = const [],
+    required this.isVisible,
+    this.currentRect,
+    this.targetRect,
+    this.subjectLabel = '',
+    this.guideLines,
   });
 
   @override
   Widget build(BuildContext context) {
     if (!isVisible) return const SizedBox.shrink();
 
-    // ⭐️ 2. 計算主體與目標位置的距離平方
-    final distanceSq = pow(bestPosition.dx - subjectPosition.dx, 2) + pow(bestPosition.dy - subjectPosition.dy, 2);
-    
-    // ⭐️ 3. 判定是否「完美對齊」 (誤差半徑可視需求微調，這裡設定約 3000)
-    final isAligned = distanceSq < 3000; 
-    
-    // ⭐️ 4. 定義狀態顏色：對齊時變成綠色，未對齊時保持藍/黃
-    final targetColor = isAligned ? const Color(0xFF4CAF50) : const Color(0xFF0A58F5); 
-    final subjectColor = isAligned ? const Color(0xFF4CAF50) : const Color(0xFFD4A000); 
-
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        CustomPaint(
-          painter: _AIGuidancePainter(
-            subjectPos: subjectPosition,
-            bestPos: bestPosition,
-            showSubjectAndArrow: showSubjectAndArrow, // 傳遞給 Painter
-            isAligned: isAligned,
-            targetColor: targetColor,
-            subjectColor: subjectColor,
-            debugRects: debugRects,
-          ),
-          size: Size.infinite,
-        ),
-        
-        // 目標位置 (藍/綠色標籤)
-        Positioned(
-          top: bestPosition.dy - 40,
-          left: bestPosition.dx + 20,
-          child: AITag(
-            icon: isAligned ? Icons.check_circle : Icons.gps_fixed,
-            label: isAligned ? '完美構圖！' : '最佳位置',
-            color: targetColor,
-          ),
-        ),
-        
-        // 主題位置 (黃/綠色標籤) - 根據開關決定是否顯示
-        if (showSubjectAndArrow)
-          Positioned(
-            top: subjectPosition.dy + 80,
-            left: subjectPosition.dx - 45,
-            child: AITag(
-              icon: Icons.camera_enhance,
-              label: subjectLabel,
-              color: subjectColor, 
-            ),
-          ),
-      ],
+    return CustomPaint(
+      size: Size.infinite,
+      painter: _BoxGuidancePainter(
+        currentRect: currentRect,
+        targetRect: targetRect,
+        guideLines: guideLines,
+      ),
     );
   }
 }
 
-class _AIGuidancePainter extends CustomPainter {
-  final Offset subjectPos;
-  final Offset bestPos;
-  final bool showSubjectAndArrow;
-  final bool isAligned;
-  final Color targetColor;
-  final Color subjectColor;
-  final List<Rect> debugRects;
+class _BoxGuidancePainter extends CustomPainter {
+  final Rect? currentRect;
+  final Rect? targetRect;
+  final List<GuideLine>? guideLines;
 
-  _AIGuidancePainter({
-    required this.subjectPos, 
-    required this.bestPos,
-    required this.showSubjectAndArrow,
-    required this.isAligned,
-    required this.targetColor,
-    required this.subjectColor,
-    required this.debugRects,
+  _BoxGuidancePainter({
+    this.currentRect, 
+    this.targetRect, 
+    this.guideLines,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final debugPaint = Paint()
-      ..color = Colors.redAccent.withOpacity(0.7)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.0;
-    for (var r in debugRects) {
-      // 將正規化 (0.0~1.0) 的 Rect 放大多螢幕實際尺寸
-      final mappedRect = Rect.fromLTRB(
-        r.left * size.width,
-        r.top * size.height,
-        r.right * size.width,
-        r.bottom * size.height,
-      );
-      canvas.drawRect(mappedRect, debugPaint);
+    // 黃色框 (現在位置)
+    if (currentRect != null) {
+      final yellowPaint = Paint()
+        ..color = Colors.amber
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0;
+      canvas.drawRect(currentRect!, yellowPaint);
     }
 
-    // 1. 繪製目標虛線圈 (永遠顯示)
-    final targetPaint = Paint()
-      ..color = targetColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = isAligned ? 4.0 : 2.0; // 對齊時線條加粗
-    canvas.drawCircle(bestPos, 60, targetPaint);
-
-    if (!showSubjectAndArrow) return;
-
-    // 2. 繪製主體對焦框
-    final subPaint = Paint()
-      ..color = subjectColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = isAligned ? 4.0 : 2.0;
-    
-    canvas.drawCircle(subjectPos, 70, subPaint);
-    canvas.drawLine(Offset(subjectPos.dx, subjectPos.dy - 80), Offset(subjectPos.dx, subjectPos.dy + 80), subPaint);
-    canvas.drawLine(Offset(subjectPos.dx - 80, subjectPos.dy), Offset(subjectPos.dx + 80, subjectPos.dy), subPaint);
-
-    // 3. 繪製引導藍色箭頭 (只有在「未對齊」時才畫箭頭，對齊後隱藏)
-    if (!isAligned) {
-      final arrowPaint = Paint()
-        ..color = targetColor.withOpacity(0.8)
+    // 藍色框 (目標位置)
+    if (targetRect != null) {
+      final bluePaint = Paint()
+        ..color = const Color(0xFF0A58F5)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0;
+      canvas.drawRect(targetRect!, bluePaint);
+    }
 
-      // 避免圈圈重疊時畫出太短的箭頭
-      final distanceSq = pow(bestPos.dx - subjectPos.dx, 2) + pow(bestPos.dy - subjectPos.dy, 2);
-      if (distanceSq > 10000) {  
-        canvas.drawLine(subjectPos, Offset(bestPos.dx + 20, bestPos.dy + 20), arrowPaint);
-        
-        final arrowHead = Path()
-          ..moveTo(bestPos.dx + 20, bestPos.dy + 20)
-          ..lineTo(bestPos.dx + 40, bestPos.dy + 20)
-          ..lineTo(bestPos.dx + 25, bestPos.dy + 40)
-          ..close();
-        canvas.drawPath(arrowHead, Paint()..color = targetColor.withOpacity(0.8));
+    // 構圖輔助線 (如延伸線)
+    if (guideLines != null && guideLines!.isNotEmpty) {
+      final guideLinePaint = Paint()
+        ..color = Colors.greenAccent.withOpacity(0.8)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5;
+
+      for (var line in guideLines!) {
+        // 將 0.0~1.0 的比例乘上螢幕寬高
+        final p1 = Offset(line.start[0] * size.width, line.start[1] * size.height);
+        final p2 = Offset(line.end[0] * size.width, line.end[1] * size.height);
+        canvas.drawLine(p1, p2, guideLinePaint);
       }
+    }
+
+    // 位移箭頭
+    if (currentRect != null && targetRect != null) {
+      final arrowPaint = Paint()
+        ..color = Colors.red
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5
+        ..strokeCap = StrokeCap.round;
+
+      final p1 = currentRect!.center;
+      final p2 = targetRect!.center;
+
+      canvas.drawLine(p1, p2, arrowPaint);
+
+      // 畫出箭頭尖端 (利用簡單的三角函數計算角度)
+      final dX = p2.dx - p1.dx;
+      final dY = p2.dy - p1.dy;
+      final angle = math.atan2(dY, dX);
+      
+      const arrowLength = 16.0; // 箭頭尖端長度
+      const arrowAngle = math.pi / 6; // 30度角開口
+
+      // 計算箭頭左右兩邊的頂點
+      final tip1 = Offset(
+        p2.dx - arrowLength * math.cos(angle - arrowAngle),
+        p2.dy - arrowLength * math.sin(angle - arrowAngle),
+      );
+      final tip2 = Offset(
+        p2.dx - arrowLength * math.cos(angle + arrowAngle),
+        p2.dy - arrowLength * math.sin(angle + arrowAngle),
+      );
+
+      // 用 Path 畫出箭頭三角形並填滿
+      final arrowHeadPath = Path()
+        ..moveTo(p2.dx, p2.dy)
+        ..lineTo(tip1.dx, tip1.dy)
+        ..lineTo(tip2.dx, tip2.dy)
+        ..close();
+
+      canvas.drawPath(arrowHeadPath, Paint()..color = Colors.red..style = PaintingStyle.fill);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _AIGuidancePainter oldDelegate) {
-    return oldDelegate.subjectPos != subjectPos || 
-           oldDelegate.bestPos != bestPos ||
-           oldDelegate.showSubjectAndArrow != showSubjectAndArrow ||
-           oldDelegate.isAligned != isAligned;
-  }
-}
-
-/// 共用的 AI 標籤小工具 (保持不變)
-class AITag extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final Color color;
-
-  const AITag({super.key, required this.icon, required this.label, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, color: Colors.white, size: 14),
-          const SizedBox(width: 4),
-          Text(label, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-        ],
-      ),
-    );
+  bool shouldRepaint(covariant _BoxGuidancePainter oldDelegate) {
+    return oldDelegate.currentRect != currentRect ||
+           oldDelegate.targetRect != targetRect ||
+           oldDelegate.guideLines != guideLines;
   }
 }
