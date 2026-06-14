@@ -69,14 +69,14 @@ class CameraProvider extends ChangeNotifier {
   }
 
   /// 設定一次新的AI調色建議（呼叫[GeminiColorService]成功後使用）。
-  /// 會重置所有「是否套用」勾選為未勾選，讓使用者自行決定要套用哪些項目。
+  /// 直接讓gemini推薦的數值順利呈現在slider上
   void setColorSuggestion(ColorAdjustmentSuggestion suggestion) {
     _colorSuggestion = suggestion;
-    _appliedSuggestions = {
-      'brightness': false,
-      'saturation': false,
-      'contrast': false,
-      'sharpness': false,
+    _currentEnhancements = {
+      'brightness': suggestion.brightness.value,
+      'saturation': suggestion.saturation.value,
+      'contrast': suggestion.contrast.value,
+      'sharpness': suggestion.sharpness.value,
     };
     notifyListeners();
   }

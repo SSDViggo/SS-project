@@ -130,7 +130,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   @override
   void dispose() {
-    _controller?.stopImageStream();
+    if (_controller?.value.isStreamingImages == true) {
+      _controller?.stopImageStream();
+    }
     _controller?.dispose();
     _detectorService.dispose();
     super.dispose();
@@ -318,6 +320,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       if (mounted) setState(() => _isProcessing = false);
     }
   }
+  
  @override
   Widget build(BuildContext context) {  
     final screenSize = MediaQuery.of(context).size;
