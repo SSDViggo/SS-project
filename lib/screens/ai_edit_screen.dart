@@ -12,6 +12,8 @@ import '../tools/unsplash_service.dart';
 import '../tools/image_processing_service.dart';
 import 'camera_screen.dart';
 import 'gallery_screen.dart';
+import '../repositories/style_memory_repo.dart';
+import '../repositories/photo_repo.dart';
 
 /// AI智能增強／編輯畫面（agentic版本）。
 ///
@@ -68,6 +70,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
   final GeminiStyleService _geminiStyleService = GeminiStyleService();
   final GeminiStyleTransferService _styleTransferService = GeminiStyleTransferService();
   final UnsplashService _unsplashService = UnsplashService();
+  final StyleMemoryRepository _memoryRepo = StyleMemoryRepository();
 
   _Phase _phase = _Phase.loadingStyles;
   String? _errorMessage;
@@ -94,6 +97,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
   /// 步驟1-2：Gemini決定風格方向 → 搜尋參考圖
   Future<void> _startStyleAnalysis() async {
     final path = _path;
+    
     if (path == null) {
       setState(() => _phase = _Phase.noPhoto);
       return;
@@ -114,6 +118,11 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
     try {
       final bytes = await File(path).readAsBytes();
+
+      // [Memory] 先讀取使用者歷史風格偏好
+      final recentMemory = await _memoryRepo.loadRecent();
+      final memoryContext = StyleMemoryRepository.toPromptContext(recentMemory);
+      debugPrint('===讀取到${recentMemory.length}筆風格記憶===');
 
       // [Reasoning 1] AI自主決定3種不同風格方向
       final styles = await _geminiStyleService.suggestStyles(bytes);
@@ -263,11 +272,36 @@ class _AiEditScreenState extends State<AiEditScreen> {
       if (!mounted) return;
       cameraProvider.addPhoto(savedPath);
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已套用並儲存到圖庫'), backgroundColor: Colors.green),
-      );
+      final photoRepo = PhotoRepository();
+      debugPrint('takePicture: uploading file to Firebase');
+      final uploadedUrl = await photoRepo.uploadPhoto(File(savedPath));
+      debugPrint('takePicture: Firebase upload successful: $uploadedUrl');
+      
+      // 把使用者偏好存入firebase
+      final enhancements = {
+        'brightness': cameraProvider.currentEnhancements['brightness'] ?? 0.0,
+        'saturation': cameraProvider.currentEnhancements['saturation'] ?? 0.0,
+        'contrast': cameraProvider.currentEnhancements['contrast'] ?? 0.0,
+        'sharpness': cameraProvider.currentEnhancements['sharpness'] ?? 0.0,
+      };
+
+      if (_selectedStyleIndex != null &&
+          _selectedStyleIndex! < _styleChoices.length) {
+        final chosen = _styleChoices[_selectedStyleIndex!];
+        _memoryRepo.save(StyleMemoryEntry(
+          sceneFeatures: chosen.option.searchQuery,
+          chosenStyleLabel: chosen.option.label,
+          chosenStyleQuery: chosen.option.searchQuery,
+          finalAdjustments: Map<String, double>.from(enhancements),
+          timestamp: DateTime.now(),
+        )).catchError((e) {
+          debugPrint('寫入風格記憶失敗: $e');
+        });
+        debugPrint('===風格記憶已寫入: ${chosen.option.label}===');
+      }
 
       _goToLibrary(context);
+      
     } catch (e) {
       debugPrint('套用編輯失敗: $e');
       if (mounted) {
