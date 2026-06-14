@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart';
 
 /// 暫時的固定使用者ID（專案目前沒有登入機制）。
 /// 之後接上登入系統後，改成從auth取得實際userId即可。
@@ -49,17 +50,32 @@ class PhotoRepository {
   Future<String> uploadPhoto(File file, {Map<String, dynamic>? enhancements}) async {
     final fileName = '${DateTime.now().millisecondsSinceEpoch}_${file.uri.pathSegments.last}';
     final ref = _storage.ref('photo-assistant/$kDeviceUserId/$fileName');
+    debugPrint('uploadPhoto: storage path=${ref.fullPath}');
 
-    await ref.putFile(file);
-    final url = await ref.getDownloadURL();
+    try {
+      final uploadTask = ref.putFile(
+        file,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
+      final snapshot = await uploadTask;
+      debugPrint('uploadPhoto: upload completed, bytesTransferred=${snapshot.bytesTransferred}, totalBytes=${snapshot.totalBytes}');
 
-    await _collection.add({
-      'url': url,
-      'createdAt': FieldValue.serverTimestamp(),
-      if (enhancements != null) 'enhancements': enhancements,
-    });
+      final url = await ref.getDownloadURL();
+      debugPrint('uploadPhoto: download URL=$url');
 
-    return url;
+      await _collection.add({
+        'url': url,
+        'createdAt': FieldValue.serverTimestamp(),
+        if (enhancements != null) 'enhancements': enhancements,
+      });
+      debugPrint('uploadPhoto: Firestore record added');
+
+      return url;
+    } catch (e, st) {
+      debugPrint('uploadPhoto failed: $e');
+      debugPrint('$st');
+      rethrow;
+    }
   }
 
   /// 依時間新到舊串流目前使用者的所有照片紀錄

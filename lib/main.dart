@@ -1,6 +1,8 @@
 import 'package:camera/camera.dart'; // 導入 camera 套件
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
+import 'firebase_options.dart';
 import 'screens/camera_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
@@ -18,6 +20,17 @@ List<CameraDescription> cameras = [];
 Future<void> main() async {
   // 確保 Flutter 引擎與底層綁定完成
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Firebase 初始化
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+    debugPrint('✅ Firebase initialized');
+  } catch (e, st) {
+    debugPrint('❌ Firebase initialization failed: $e');
+    debugPrint('$st');
+  }
 
   // 1. 修改路徑並加上 try-catch 防禦，避免沒讀到就讓整個 App 死機
   try {

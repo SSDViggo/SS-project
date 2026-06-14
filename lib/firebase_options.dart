@@ -23,10 +23,7 @@ class DefaultFirebaseOptions {
       case TargetPlatform.android:
         return android;
       case TargetPlatform.iOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for ios - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return ios;
       case TargetPlatform.macOS:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for macos - '
@@ -50,20 +47,27 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyCftEEXudXOs0bC910_kxXlx8hs-7z0PfU',
-    appId: '1:501164139177:web:51ce935bfa8fce99ea7fb8',
-    messagingSenderId: '501164139177',
-    projectId: 'todoist-72a29',
-    authDomain: 'todoist-72a29.firebaseapp.com',
-    storageBucket: 'todoist-72a29.firebasestorage.app',
+    apiKey: 'AIzaSyAi_2EAK-2L0odFVuGL1aqQh_cmhfxL6XY',
+    appId: '1:467846370473:web:5ac63d1fffea483466c5b8',
+    messagingSenderId: '467846370473',
+    projectId: 'ss-final-project-fbefe',
+    authDomain: 'ss-final-project-fbefe.firebaseapp.com',
+    storageBucket: 'ss-final-project-fbefe.firebasestorage.app',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyCBKq9uTRjosJ2-azLWoHvZlQqUBwz7zEs',
-    appId: '1:501164139177:android:0b70d24283ec651dea7fb8',
-    messagingSenderId: '501164139177',
-    projectId: 'todoist-72a29',
-    storageBucket: 'todoist-72a29.firebasestorage.app',
+    apiKey: 'AIzaSyAU7BkySMheN_Y0aGQba0KtcgfYmL0HDZo',
+    appId: '1:467846370473:android:84d6de7deef0ba9066c5b8',
+    messagingSenderId: '467846370473',
+    projectId: 'ss-final-project-fbefe',
+    storageBucket: 'ss-final-project-fbefe.firebasestorage.app',
   );
-
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'AIzaSyDMt-Av0nKCdmT67W_BklarmLqxyW1W6Og',
+    appId: '1:467846370473:ios:cac8924cb72da9e066c5b8',
+    messagingSenderId: '467846370473',
+    projectId: 'ss-final-project-fbefe',
+    storageBucket: 'ss-final-project-fbefe.firebasestorage.app',
+    iosBundleId: 'com.example.app',
+  );
 }

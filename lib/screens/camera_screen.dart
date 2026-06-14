@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
+import '../repositories/photo_repo.dart';
 import '../tools/ai_guidance_overlay.dart';
 import '../tools/agent_thinking_log.dart';
 import '../tools/composition_overlay_manager.dart';
@@ -251,33 +252,44 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       await controller.stopImageStream();
     }
 
+    debugPrint('takePicture: start');
     setState(() => _isProcessing = true);
 
     try {
       // 拍下照片
       final XFile rawFile = await controller.takePicture();
+      debugPrint('takePicture: captured rawFile=${rawFile.path}');
 
       // 複製到 App 內部資料夾
       final directory = await getApplicationDocumentsDirectory();
       final fileName = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedPath = '${directory.path}/$fileName';
       await File(rawFile.path).copy(savedPath);
+      debugPrint('takePicture: saved local copy at $savedPath');
 
       if (!mounted) return;
       context.read<CameraProvider>().addPhoto(savedPath);
 
-      // 使用 gal 將照片存入手機的公開相簿
-      await Gal.putImage(savedPath);
+      final photoRepo = PhotoRepository();
+      debugPrint('takePicture: uploading file to Firebase');
+      final uploadedUrl = await photoRepo.uploadPhoto(File(savedPath));
+      debugPrint('takePicture: Firebase upload successful: $uploadedUrl');
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已儲存到圖庫'), backgroundColor: Colors.green),
-      );
-    } catch (e) {
-      debugPrint('拍照失敗: $e');
+      // 3. 使用 gal 將照片存入手機的公開相簿 (Gallery)
+      await Gal.putImage(savedPath);
+      debugPrint('takePicture: saved to gallery');
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('拍照失敗，請再試一次'), backgroundColor: Colors.red),
+          SnackBar(content: Text('已儲存到圖庫，Firebase URL: $uploadedUrl'), backgroundColor: Colors.green),
+        );
+      }
+    } catch (e, st) {
+      debugPrint('takePicture failed: $e');
+      debugPrint('$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('拍照或上傳失敗：$e'), backgroundColor: Colors.red),
         );
       }
     } finally {
