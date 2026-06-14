@@ -78,19 +78,29 @@ class _AiEditScreenState extends State<AiEditScreen> {
   /// true代表預覽顯示「原圖」；false代表顯示套用目前調整後的「編輯後」效果
   bool _showOriginal = false;
   bool _isSaving = false;
+  String? _pickedImagePath;
 
-  String? get _path => widget.imagePath ?? context.read<CameraProvider>().lastCapturePath;
+  /// ⭐️ 2. 修改路徑獲取邏輯：優先使用挑選的照片，其次是 widget 傳入，最後才是相機拍攝
+  String? get _path => _pickedImagePath ?? widget.imagePath ?? context.read<CameraProvider>().lastCapturePath;
+  /// ⭐️ 修改路徑獲取邏輯：優先使用挑選的照片，次之使用 widget 傳入，最後用相機最後拍攝
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final cameraProvider = context.read<CameraProvider>();
-      cameraProvider.startEditing(_path);
-      _startStyleAnalysis();
+      _initEditor(); // 👈 這裡會呼叫下面定義的方法
     });
   }
-
+  void _initEditor() {
+    final path = _path;
+    if (path != null) {
+      final cameraProvider = context.read<CameraProvider>();
+      cameraProvider.startEditing(path);
+      _startStyleAnalysis();
+    } else {
+      setState(() => _phase = _Phase.noPhoto);
+    }
+  }
   /// 步驟1-2：Gemini決定風格方向 → 搜尋參考圖
   Future<void> _startStyleAnalysis() async {
     final path = _path;
@@ -379,10 +389,20 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 icon: const Icon(Icons.photo_library_outlined),
                 label: const Text('去圖庫選照片'),
                 style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const GalleryScreen()),
+                onPressed: () async {
+                  final String? selectedPath = await Navigator.of(context).push<String>(
+                    MaterialPageRoute(
+                      builder: (_) => const GalleryScreen(isPickerMode: true), // 傳入 true
+                    ),
                   );
+
+                  // 如果使用者有點擊照片成功返回
+                  if (selectedPath != null && mounted) {
+                    setState(() {
+                      _pickedImagePath = selectedPath; // 儲存回傳的路徑
+                    });
+                    _initEditor(); // 重新設定 Provider 並跑 AI 分析
+                  }
                 },
               ),
             ),

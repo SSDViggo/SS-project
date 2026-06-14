@@ -78,6 +78,42 @@ class PhotoRepository {
     }
   }
 
+  Future<void> deletePhoto(String photoId) async {
+    debugPrint('deletePhoto: start deleting photoId=$photoId');
+    try {
+      // 1. 先從 Firestore 撈出這筆紀錄，取得圖片的 Storage URL
+      final docSnapshot = await _collection.doc(photoId).get();
+      if (!docSnapshot.exists) {
+        throw Exception('找不到該照片的資料庫紀錄');
+      }
+
+      final data = docSnapshot.data();
+      final String? imageUrl = data?['url'];
+
+      // 2. 如果 URL 存在，先去 Firebase Storage 刪除實體檔案
+      if (imageUrl != null && imageUrl.isNotEmpty) {
+        try {
+          // 利用 refFromURL 直接定位到 Storage 的實體檔案位置
+          final storageRef = _storage.refFromURL(imageUrl);
+          debugPrint('deletePhoto: deleting storage file=${storageRef.fullPath}');
+          await storageRef.delete();
+          debugPrint('deletePhoto: storage file deleted successfully');
+        } catch (storageError) {
+          // 預防萬一：若 Storage 檔案已被手動刪除或找不到，記錄下來，但仍繼續刪除資料庫紀錄
+          debugPrint('Warning: Failed to delete storage file, might not exist: $storageError');
+        }
+      }
+
+      // 3. 刪除 Firestore 中的紀錄
+      await _collection.doc(photoId).delete();
+      debugPrint('deletePhoto: Firestore doc deleted successfully');
+    } catch (e, st) {
+      debugPrint('deletePhoto failed: $e');
+      debugPrint('$st');
+      rethrow;
+    }
+  }
+
   /// 依時間新到舊串流目前使用者的所有照片紀錄
   Stream<List<PhotoRecord>> streamPhotos() {
     return _collection
