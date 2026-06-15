@@ -506,51 +506,60 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
   Widget _buildStyleSelection() {
     final path = _path;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (path != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: _buildPreviewImage(
-                path,
-                height: 180,
-                width: double.infinity,
-                fit: BoxFit.cover,
-              ),
+    return Column(
+      children: [
+        // 固定圖片區：自適應高度，最多佔螢幕55%，完整顯示不裁切
+        if (path != null)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.55,
             ),
-          const SizedBox(height: 20),
-          const Text(
-            '✨ AI 為這張照片找了三種風格方向',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '選一張你喜歡的風格，AI會分析差異並調整你的照片',
-            style: TextStyle(fontSize: 12, color: Colors.grey[400]),
-          ),
-          const SizedBox(height: 16),
-          ..._styleChoices.asMap().entries
-          .where((entry) => entry.value.imageUrl != null) // 如果AI嘗試找兩次還是沒有找到，就不要顯示
-          .map((entry) {
-            final index = entry.key;
-            final choice = entry.value;
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _buildStyleCard(index, choice),
-            );
-          }),
-          const SizedBox(height: 12),
-          Center(
-            child: TextButton(
-              onPressed: _skipToManualEditing,
-              child: const Text('跳過，直接手動調整'),
+            child: Container(
+              width: double.infinity,
+              color: Colors.black,
+              child: _buildPreviewImage(path, fit: BoxFit.contain),
             ),
           ),
-        ],
-      ),
+
+        // 可滾動的風格選擇區
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '✨ AI 為這張照片找了三種風格方向',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '選一張你喜歡的風格，AI會分析差異並調整你的照片',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                ),
+                const SizedBox(height: 16),
+                ..._styleChoices.asMap().entries
+                    .where((entry) => entry.value.imageUrl != null)
+                    .map((entry) {
+                  final index = entry.key;
+                  final choice = entry.value;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _buildStyleCard(index, choice),
+                  );
+                }),
+                const SizedBox(height: 12),
+                Center(
+                  child: TextButton(
+                    onPressed: _skipToManualEditing,
+                    child: const Text('跳過，直接手動調整'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
