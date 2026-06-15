@@ -14,20 +14,9 @@ import 'camera_screen.dart';
 import 'gallery_screen.dart';
 import '../repositories/style_memory_repo.dart';
 import '../repositories/photo_repo.dart';
+import 'dart:typed_data'; // ⭐️ 引入 Uint8List 支援
 
 /// AI智能增強／編輯畫面（agentic版本）。
-///
-/// 流程：
-/// 1. 進畫面時，自動把原圖送給[GeminiStyleService] →
-///    AI**自主決定**3種適合這張照片、且彼此明顯不同的風格方向
-///    （回傳搜尋關鍵詞+中文標籤，不回傳圖片）。
-/// 2. 用這些關鍵詞呼叫[UnsplashService]（工具），各取得一張參考圖。
-/// 3. 顯示3張參考圖供使用者選擇一種喜歡的風格。
-/// 4. 使用者選定後，把「原圖+參考圖」一起送給
-///    [GeminiColorService.analyzeStyleTransfer] →
-///    AI**自主分析**兩者差異，輸出對應的調色數值與理由。
-/// 5. 數值寫入Slider，畫面切回原本的手動調整介面，使用者可再微調。
-/// 6. 套用儲存：真正對pixel做運算並輸出新照片。
 class AiEditScreen extends StatefulWidget {
   final String? imagePath;
 
@@ -37,28 +26,15 @@ class AiEditScreen extends StatefulWidget {
   State<AiEditScreen> createState() => _AiEditScreenState();
 }
 
-/// 畫面所處的階段
 enum _Phase {
-  /// 沒有可編輯的照片（lastCapturePath為null且未傳入imagePath）
   noPhoto,
-
-  /// 正在呼叫Gemini取得風格建議、並搜尋參考圖
   loadingStyles,
-
-  /// 顯示3張參考圖供使用者選擇
   selectingStyle,
-
-  /// 已選定參考圖，正在分析兩圖差異
   analyzingTransfer,
-
-  /// 顯示Slider手動調整介面
   editing,
-
-  /// 發生錯誤
   error,
 }
 
-/// 一個風格選項在UI上的呈現：AI給的標籤 + 搜尋到的參考圖URL（可能為null）
 class _StyleChoice {
   final StyleOption option;
   final String? imageUrl;
@@ -78,22 +54,21 @@ class _AiEditScreenState extends State<AiEditScreen> {
   List<_StyleChoice> _styleChoices = [];
   int? _selectedStyleIndex;
 
-  /// true代表預覽顯示「原圖」；false代表顯示套用目前調整後的「編輯後」效果
   bool _showOriginal = false;
   bool _isSaving = false;
   String? _pickedImagePath;
 
-  /// ⭐️ 2. 修改路徑獲取邏輯：優先使用挑選的照片，其次是 widget 傳入，最後才是相機拍攝
+  /// ⭐️ 修改路徑獲取邏輯：優先使用挑選的照片，其次是 widget 傳入，最後才是相機拍攝
   String? get _path => _pickedImagePath ?? widget.imagePath ?? context.read<CameraProvider>().lastCapturePath;
-  /// ⭐️ 修改路徑獲取邏輯：優先使用挑選的照片，次之使用 widget 傳入，最後用相機最後拍攝
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initEditor(); // 👈 這裡會呼叫下面定義的方法
+      _initEditor();
     });
   }
+
   void _initEditor() {
     final path = _path;
     if (path != null) {
@@ -104,6 +79,16 @@ class _AiEditScreenState extends State<AiEditScreen> {
       setState(() => _phase = _Phase.noPhoto);
     }
   }
+
+  /// ⭐️ 輔助方法：動態判斷該使用 Image.network 還是 Image.file 進行顯示
+  Widget _buildPreviewImage(String path, {BoxFit fit = BoxFit.cover, double? height, double? width}) {
+    if (path.startsWith('http://') || path.startsWith('https://')) {
+      return Image.network(path, fit: fit, height: height, width: width);
+    } else {
+      return Image.file(File(path), fit: fit, height: height, width: width);
+    }
+  }
+
   /// 步驟1-2：Gemini決定風格方向 → 搜尋參考圖
   Future<void> _startStyleAnalysis() async {
     final path = _path;
@@ -127,7 +112,19 @@ class _AiEditScreenState extends State<AiEditScreen> {
     });
 
     try {
-      final bytes = await File(path).readAsBytes();
+      // ⭐️ 修復：分流讀取遠端 URL 或是 本地 File 的 bytes
+      final Uint8List bytes;
+      if (path.startsWith('http://') || path.startsWith('https://')) {
+        debugPrint('_startStyleAnalysis: 偵測到遠端網路圖片，開始下載... $path');
+        final response = await http.get(Uri.parse(path));
+        if (response.statusCode == 200) {
+          bytes = response.bodyBytes;
+        } else {
+          throw Exception('下載網路圖片失敗，HTTP 狀態碼: ${response.statusCode}');
+        }
+      } else {
+        bytes = await File(path).readAsBytes();
+      }
 
       // [Memory] 先讀取使用者歷史風格偏好
       final recentMemory = await _memoryRepo.loadRecent();
@@ -183,7 +180,20 @@ class _AiEditScreenState extends State<AiEditScreen> {
     });
 
     try {
-      final originalBytes = await File(path).readAsBytes();
+      // ⭐️ 修復：分流讀取遠端 URL 或是 本地 File 的原圖 bytes
+      final Uint8List originalBytes;
+      if (path.startsWith('http://') || path.startsWith('https://')) {
+        debugPrint('_selectStyle: 偵測到原圖為遠端網路圖片，開始下載... $path');
+        final response = await http.get(Uri.parse(path));
+        if (response.statusCode == 200) {
+          originalBytes = response.bodyBytes;
+        } else {
+          throw Exception('下載原圖網路圖片失敗，HTTP 狀態碼: ${response.statusCode}');
+        }
+      } else {
+        originalBytes = await File(path).readAsBytes();
+      }
+
       final response = await http.get(Uri.parse(choice.imageUrl!));
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
@@ -266,7 +276,19 @@ class _AiEditScreenState extends State<AiEditScreen> {
       final fileName = 'EDIT_${DateTime.now().millisecondsSinceEpoch}.jpg';
       final savedPath = '${directory.path}/$fileName';
 
-      final inputBytes = await File(sourcePath).readAsBytes();
+      // ⭐️ 修復：如果要套用像素級儲存，也需要先下載網路原圖
+      final Uint8List inputBytes;
+      if (sourcePath.startsWith('http://') || sourcePath.startsWith('https://')) {
+        final response = await http.get(Uri.parse(sourcePath));
+        if (response.statusCode == 200) {
+          inputBytes = response.bodyBytes;
+        } else {
+          throw Exception('儲存時下載網路圖片失敗');
+        }
+      } else {
+        inputBytes = await File(sourcePath).readAsBytes();
+      }
+
       final outputBytes = await compute(
         processImageBytes,
         ImageProcessingParams(
@@ -287,7 +309,6 @@ class _AiEditScreenState extends State<AiEditScreen> {
       final uploadedUrl = await photoRepo.uploadPhoto(File(savedPath));
       debugPrint('takePicture: Firebase upload successful: $uploadedUrl');
       
-      // 把使用者偏好存入firebase
       final enhancements = {
         'brightness': cameraProvider.currentEnhancements['brightness'] ?? 0.0,
         'saturation': cameraProvider.currentEnhancements['saturation'] ?? 0.0,
@@ -324,9 +345,6 @@ class _AiEditScreenState extends State<AiEditScreen> {
     }
   }
 
-  /// 是否要攔截系統返回（手勢/返回鍵）：
-  /// 在editing狀態、且有風格選項可以回去選時，
-  /// 返回應該先回到「選風格」畫面，而不是直接離開整個編輯畫面。
   bool get _shouldInterceptBack => _phase == _Phase.editing && _styleChoices.isNotEmpty;
 
   @override
@@ -390,15 +408,9 @@ class _AiEditScreenState extends State<AiEditScreen> {
           children: [
             Icon(Icons.photo_camera_outlined, color: Colors.grey[600], size: 48),
             const SizedBox(height: 16),
-            Text(
-              '還沒有可以編輯的照片',
-              style: TextStyle(color: Colors.grey[300], fontSize: 16),
-            ),
+            Text('還沒有可以編輯的照片', style: TextStyle(color: Colors.grey[300], fontSize: 16)),
             const SizedBox(height: 4),
-            Text(
-              '先拍一張照片，或從圖庫選一張',
-              style: TextStyle(color: Colors.grey[500], fontSize: 13),
-            ),
+            Text('先拍一張照片，或從圖庫選一張', style: TextStyle(color: Colors.grey[500], fontSize: 13)),
             const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
@@ -426,16 +438,15 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 onPressed: () async {
                   final String? selectedPath = await Navigator.of(context).push<String>(
                     MaterialPageRoute(
-                      builder: (_) => const GalleryScreen(isPickerMode: true), // 傳入 true
+                      builder: (_) => const GalleryScreen(isPickerMode: true),
                     ),
                   );
 
-                  // 如果使用者有點擊照片成功返回
                   if (selectedPath != null && mounted) {
                     setState(() {
-                      _pickedImagePath = selectedPath; // 儲存回傳的路徑
+                      _pickedImagePath = selectedPath;
                     });
-                    _initEditor(); // 重新設定 Provider 並跑 AI 分析
+                    _initEditor();
                   }
                 },
               ),
@@ -468,28 +479,17 @@ class _AiEditScreenState extends State<AiEditScreen> {
           children: [
             const Icon(Icons.error_outline, color: Colors.red, size: 48),
             const SizedBox(height: 16),
-            Text(
-              _errorMessage ?? '發生錯誤',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white),
-            ),
+            Text(_errorMessage ?? '發生錯誤', textAlign: TextAlign.center, style: const TextStyle(color: Colors.white)),
             const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: _startStyleAnalysis,
-              child: const Text('重試'),
-            ),
+            ElevatedButton(onPressed: _startStyleAnalysis, child: const Text('重試')),
             const SizedBox(height: 8),
-            TextButton(
-              onPressed: _skipToManualEditing,
-              child: const Text('跳過，直接手動調整'),
-            ),
+            TextButton(onPressed: _skipToManualEditing, child: const Text('跳過，直接手動調整')),
           ],
         ),
       ),
     );
   }
 
-  /// 步驟3：顯示原圖 + 3張AI挑選的參考風格圖供使用者選擇
   Widget _buildStyleSelection() {
     final path = _path;
     return SingleChildScrollView(
@@ -500,8 +500,8 @@ class _AiEditScreenState extends State<AiEditScreen> {
           if (path != null)
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.file(
-                File(path),
+              child: _buildPreviewImage(
+                path,
                 height: 180,
                 width: double.infinity,
                 fit: BoxFit.cover,
@@ -577,11 +577,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
               Expanded(
                 child: Text(
                   choice.option.label,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.white),
                 ),
               ),
               if (loading)
@@ -595,7 +591,6 @@ class _AiEditScreenState extends State<AiEditScreen> {
     );
   }
 
-  /// 步驟5-6：手動調整Slider + Before/After預覽 + 套用儲存
   Widget _buildEditingView(CameraProvider cameraProvider) {
     final path = _path;
 
@@ -612,7 +607,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                 if (path != null)
                   Positioned.fill(
                     child: _showOriginal
-                        ? Image.file(File(path), fit: BoxFit.cover)
+                        ? _buildPreviewImage(path, fit: BoxFit.cover)
                         : ImageFiltered(
                             imageFilter: ui.ImageFilter.blur(
                               sigmaX: (cameraProvider.currentEnhancements['sharpness'] ?? 0.0) < 0
@@ -624,7 +619,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                             ),
                             child: ColorFiltered(
                               colorFilter: ColorFilter.matrix(_buildPreviewColorMatrix(cameraProvider)),
-                              child: Image.file(File(path), fit: BoxFit.cover),
+                              child: _buildPreviewImage(path, fit: BoxFit.cover),
                             ),
                           ),
                   )
@@ -663,10 +658,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          '調整',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                        ),
+                        const Text('調整', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
                         const SizedBox(height: 8),
                         _buildSliderControl(
                           label: '亮度',
@@ -709,9 +701,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
                           backgroundColor: const Color(0xFF0066FF),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        onPressed: (path == null || _isSaving)
-                            ? null
-                            : () => _applyAndSave(path, cameraProvider),
+                        onPressed: (path == null || _isSaving) ? null : () => _applyAndSave(path, cameraProvider),
                         child: _isSaving
                             ? const SizedBox(
                                 width: 22,
@@ -752,10 +742,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.white)),
-            Text(
-              '${value.round()}%',
-              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.blue),
-            ),
+            Text('${value.round()}%', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.blue)),
           ],
         ),
         if (reason != null) ...[
