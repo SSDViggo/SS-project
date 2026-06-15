@@ -700,7 +700,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                   shape: BoxShape.circle,
                 ),
                 child: IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white),
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
                   onPressed: () => Navigator.of(context).maybePop(),
                 ),
               ),

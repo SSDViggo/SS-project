@@ -237,10 +237,16 @@ class _AiEditScreenState extends State<AiEditScreen> {
     setState(() => _phase = _Phase.editing);
   }
 
-  void _goToLibrary(BuildContext context) {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const GalleryScreen()),
-    );
+  void _goToLibrary(BuildContext context, {bool isAfterSave = false}) {
+    if (isAfterSave) {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const GalleryScreen()),
+      );
+    } else {
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const GalleryScreen()),
+      );
+    }
   }
 
   List<double> _buildPreviewColorMatrix(CameraProvider provider) {
@@ -331,7 +337,7 @@ class _AiEditScreenState extends State<AiEditScreen> {
         debugPrint('===風格記憶已寫入: ${chosen.option.label}===');
       }
 
-      _goToLibrary(context);
+      _goToLibrary(context, isAfterSave: true);
       
     } catch (e) {
       debugPrint('套用編輯失敗: $e');
