@@ -1,13 +1,15 @@
 import 'package:camera/camera.dart'; // 導入 camera 套件
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-
+import 'services/auth_service.dart';
 import 'firebase_options.dart';
 import 'screens/camera_screen.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'providers/camera_provider.dart';
 import 'screens/gallery_screen.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'screens/login_screen.dart';
 
 import 'screens/composition_library_screen.dart';
 
@@ -69,7 +71,8 @@ class MyApp extends StatelessWidget {
             elevation: 0,
           ),
         ),
-        home: const PhotoAssistantScreen(),
+        // ⭐️ 修改這裡：把原本的 PhotoAssistantScreen 改成 AuthWrapper
+        home: const AuthWrapper(), 
       ),
     );
   }
@@ -96,7 +99,42 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
       ),
     );
   }
-
+void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E22), // 配合你 App 的深色主題
+        title: const Text('確認登出', style: TextStyle(color: Colors.white)),
+        content: const Text('確定要登出 Google 帳號嗎？', style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx), // 取消，關閉對話框
+            child: const Text('取消', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx); // 先關閉對話框
+              
+              // 呼叫登出邏輯
+              await AuthService().signOut();
+              
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('已成功登出'),
+                  backgroundColor: Colors.green,
+                ),
+              );
+              
+              // 登出後刷新首頁狀態（如果有需要）
+              setState(() {}); 
+            },
+            child: const Text('登出', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+  }
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -106,6 +144,14 @@ class _PhotoAssistantScreenState extends State<PhotoAssistantScreen> {
           style: TextStyle(fontWeight: FontWeight.w600, fontSize: 20),
         ),
         centerTitle: true,
+        // ⭐️ 新增 actions 區塊，把登出按鈕放在右上角
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout, color: Colors.white),
+            tooltip: '登出',
+            onPressed: () => _showLogoutDialog(context),
+          ),
+        ],
       ),
       // ⭐️ 核心修改：將 Body 改為單一 ListView，讓全畫面都能一起滑動
       body: ListView(
@@ -315,6 +361,36 @@ class FeatureCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ⭐️ 新增這個類別放在 main.dart 最底下
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    // 監聽 Firebase 登入狀態的 Stream
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        // 如果還在確認狀態中 (連線中)
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF121212),
+            body: Center(child: CircularProgressIndicator(color: Color(0xFF0A58F5))),
+          );
+        }
+        
+        // 如果 snapshot 有資料，代表使用者【已登入】
+        if (snapshot.hasData && snapshot.data != null) {
+          return const PhotoAssistantScreen(); // 進入主畫面
+        }
+        
+        // 否則，代表使用者【未登入】
+        return const LoginScreen(); // 顯示登入畫面
+      },
     );
   }
 }

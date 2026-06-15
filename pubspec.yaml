@@ -53,6 +53,8 @@ dependencies:
   gal: ^2.3.2
   photo_manager: ^3.3.0 
   photo_manager_image_provider: any
+  firebase_auth: ^4.16.0
+  google_sign_in: ^7.2.0
   
 dev_dependencies:
   flutter_test:

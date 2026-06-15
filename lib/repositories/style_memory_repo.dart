@@ -1,9 +1,8 @@
 /// This repository is for ai edit screen
 /// in order to store user's preferences
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // ⭐️ 引入 FirebaseAuth
 import 'package:flutter/foundation.dart';
-
-import 'photo_repo.dart' show kDeviceUserId; // TODO: check photo repo
 
 /// 單筆風格記憶：一次編輯行為的場景特徵 + 使用者選擇的風格
 @immutable
@@ -59,23 +58,31 @@ class StyleMemoryEntry {
 /// 讀寫使用者風格選擇歷史的repository。
 ///
 /// Firestore路徑：
-/// `users/{userId}/style_memory/{docId}`
+/// `users/{uid}/style_memory/{docId}`
 ///
 /// 這是agentic流程的Memory層：
 /// 每次編輯完成後寫入一筆記錄，下次進編輯畫面時讀取最近N筆，
 /// 注入Gemini的prompt讓AI能根據使用者偏好做出更個人化的推薦。
 class StyleMemoryRepository {
   final FirebaseFirestore _db;
-  final String _userId;
+  final FirebaseAuth _auth; // ⭐️ 新增 Auth 實例
 
   StyleMemoryRepository({
     FirebaseFirestore? db,
-    String? userId,
+    FirebaseAuth? auth,
   })  : _db = db ?? FirebaseFirestore.instance,
-        _userId = userId ?? kDeviceUserId;
+        _auth = auth ?? FirebaseAuth.instance;
 
+  // ⭐️ 動態取得當前登入使用者的 UID
+  String get _uid {
+    final user = _auth.currentUser;
+    if (user == null) throw Exception('使用者尚未登入');
+    return user.uid;
+  }
+
+  // ⭐️ 使用動態取得的 _uid 作為路徑
   CollectionReference<Map<String, dynamic>> get _col =>
-      _db.collection('users').doc(_userId).collection('style_memory');
+      _db.collection('users').doc(_uid).collection('style_memory');
 
   /// 寫入一筆風格記憶
   Future<void> save(StyleMemoryEntry entry) async {
@@ -89,6 +96,9 @@ class StyleMemoryRepository {
   /// 讀取最近[limit]筆記憶（依時間倒序）
   Future<List<StyleMemoryEntry>> loadRecent({int limit = 5}) async {
     try {
+      // ⭐️ 防呆保護：如果使用者未登入，直接回傳空陣列，避免畫面崩潰
+      if (_auth.currentUser == null) return [];
+
       final snapshot = await _col
           .orderBy('timestamp', descending: true)
           .limit(limit)
