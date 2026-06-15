@@ -135,9 +135,13 @@ class _AiEditScreenState extends State<AiEditScreen> {
       final styles = await _geminiStyleService.suggestStyles(bytes);
 
       // [Tool Using] 用AI決定的關鍵詞，呼叫Unsplash搜尋參考圖
-      final urls = await _unsplashService.searchPhotos(
-        styles.map((s) => s.searchQuery).toList(),
-      );
+      final queries = styles.map((s) => s.searchQuery).toList();
+      final urls = await _unsplashService.searchPhotos(queries);
+ 
+      // for debug purpose
+      for (var i = 0; i < queries.length; i++) {
+        debugPrint('===Unsplash[$i] query="${queries[i]}" url=${urls[i] ?? "null"}===');
+      }
 
       if (!mounted) return;
       setState(() {
@@ -528,7 +532,9 @@ class _AiEditScreenState extends State<AiEditScreen> {
             style: TextStyle(fontSize: 12, color: Colors.grey[400]),
           ),
           const SizedBox(height: 16),
-          ..._styleChoices.asMap().entries.map((entry) {
+          ..._styleChoices.asMap().entries
+          .where((entry) => entry.value.imageUrl != null) // 如果AI嘗試找兩次還是沒有找到，就不要顯示
+          .map((entry) {
             final index = entry.key;
             final choice = entry.value;
             return Padding(

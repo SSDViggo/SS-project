@@ -27,27 +27,42 @@ class UnsplashService {
     if (accessKey.isEmpty) {
       throw UnsplashRequestException('找不到UNSPLASH_ACCESS_KEY，請確認.env設定');
     }
-
+ 
+    final result = await _search(query, accessKey);
+    if (result != null) return result;
+ 
+    // fallback：只取前兩個字重試（去掉主體，只留風格描述）
+    final words = query.trim().split(' ');
+    if (words.length > 2) {
+      final shortQuery = words.take(2).join(' ');
+      debugPrint('Unsplash fallback: "$query" → "$shortQuery"');
+      return await _search(shortQuery, accessKey);
+    }
+ 
+    return null;
+  }
+ 
+  Future<String?> _search(String query, String accessKey) async {
     final uri = Uri.https('api.unsplash.com', '/search/photos', {
       'query': query,
       'per_page': '1',
       'orientation': 'squarish',
     });
-
+ 
     try {
       final response = await http.get(
         uri,
         headers: {'Authorization': 'Client-ID $accessKey'},
       );
-
+ 
       if (response.statusCode != 200) {
         throw UnsplashRequestException('HTTP ${response.statusCode}: ${response.body}');
       }
-
+ 
       final data = jsonDecode(response.body) as Map<String, dynamic>;
       final results = data['results'] as List<dynamic>?;
       if (results == null || results.isEmpty) return null;
-
+ 
       final urls = results.first['urls'] as Map<String, dynamic>?;
       return urls?['regular'] as String?;
     } catch (e) {
