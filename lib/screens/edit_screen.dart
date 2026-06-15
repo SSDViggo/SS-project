@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../providers/camera_provider.dart';
-// import '../repositories/photo_repo.dart';
+import '../repositories/photo_repo.dart';
 import '../tools/gemini_color_service.dart';
 import '../tools/image_processing_service.dart';
 import 'library_screen.dart';
@@ -136,24 +136,31 @@ class _EditScreenState extends State<EditScreen> {
       await File(savedPath).writeAsBytes(outputBytes);
 
       if (!mounted) return;
-      cameraProvider.addPhoto(savedPath);
+      cameraProvider.addPhoto(savedPath); // local storage
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已套用並儲存到圖庫'), backgroundColor: Colors.green),
       );
 
-      // // 連同這次套用的調整參數（Agent決策紀錄）一起上傳
-      // final enhancements = {
-      //   'brightness': cameraProvider.effectiveValue('brightness'),
-      //   'saturation': cameraProvider.effectiveValue('saturation'),
-      //   'contrast': cameraProvider.effectiveValue('contrast'),
-      //   'sharpness': cameraProvider.effectiveValue('sharpness'),
-      // };
-      // PhotoRepository()
-      //     .uploadPhoto(File(savedPath), enhancements: enhancements)
-      //     .catchError((e) {
-      //   debugPrint('上傳Firebase失敗: $e');
-      // });
+      // 連同這次套用的調整參數（Agent決策紀錄）一起上傳
+      final enhancements = {
+        'brightness': (cameraProvider.currentEnhancements['brightness'] ?? 0.0),
+        'saturation': (cameraProvider.currentEnhancements['saturation'] ?? 0.0),
+        'contrast': (cameraProvider.currentEnhancements['contrast'] ?? 0.0),
+        'sharpness': (cameraProvider.currentEnhancements['sharpness'] ?? 0.0),
+      };
+      PhotoRepository()
+          .uploadPhoto(File(savedPath), enhancements: enhancements)
+          .then((_) {
+        // 上傳成功後刪除本地暫存檔
+        File(savedPath).delete().catchError((e) {
+          debugPrint('刪除暫存檔失敗: $e');
+        });
+        debugPrint('Firebase上傳成功，本地暫存檔已刪除');
+      }).catchError((e) {
+        debugPrint('上傳Firebase失敗: $e');
+        // 上傳失敗時保留本地檔案，避免資料遺失
+      });
 
       _goToLibrary(context);
     } catch (e) {

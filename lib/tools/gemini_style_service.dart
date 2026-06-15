@@ -118,4 +118,43 @@ Do not include any image data or pixel values in your response.
       throw GeminiStyleParseException(e.toString(), responseText);
     }
   }
+
+  /// 與[suggestStyles]相同，但額外注入使用者的歷史風格偏好（Memory層）。
+  ///
+  /// [memoryContext]由[StyleMemoryRepository.toPromptContext]產生——
+  /// 如果沒有歷史記錄，傳入空字串即可，行為與[suggestStyles]完全一致。
+  Future<List<StyleOption>> suggestStylesWithMemory(
+    Uint8List imageBytes, {
+    required String memoryContext,
+  }) async {
+    final fullPrompt = memoryContext.isEmpty
+        ? _promptText
+        : '$memoryContext\n$_promptText';
+ 
+    final prompt = TextPart(fullPrompt);
+    final imagePart = DataPart('image/jpeg', imageBytes);
+ 
+    late final String responseText;
+    try {
+      final response = await _model.generateContent([
+        Content.multi([prompt, imagePart]),
+      ]);
+      responseText = response.text?.trim() ?? '';
+    } catch (e) {
+      throw GeminiStyleRequestException(e.toString());
+    }
+ 
+    try {
+      final cleaned = responseText.replaceAll('```json', '').replaceAll('```', '').trim();
+      final data = jsonDecode(cleaned) as Map<String, dynamic>;
+      final styles = data['styles'] as List<dynamic>?;
+      if (styles == null || styles.isEmpty) {
+        throw GeminiStyleParseException('回應中沒有styles陣列', responseText);
+      }
+      return styles.map(StyleOption.fromJson).toList();
+    } catch (e) {
+      if (e is GeminiStyleParseException) rethrow;
+      throw GeminiStyleParseException(e.toString(), responseText);
+    }
+  }
 }
