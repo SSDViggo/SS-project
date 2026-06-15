@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
+import 'object_detector_service.dart'; // ⭐️ 引入 ML Kit 的 NormalizedBox 類別
 
 class GeminiRequestException implements Exception {
   final String message;
@@ -65,11 +66,15 @@ class Perception {
 
 @immutable
 class DetectedSubject {
-  final String name;
+  final int trackingId;     // ⭐️ 新增：綁定 ML Kit 的 ID
+  final String label;       // ⭐️ 新增：取代原本的 name
+  final bool isMainSubject; // ⭐️ 新增：確認是否為核心主體
   final List<double> boundingBox;
 
   const DetectedSubject({
-    required this.name,
+    required this.trackingId,
+    required this.label,
+    required this.isMainSubject,
     required this.boundingBox,
   });
 
@@ -82,7 +87,9 @@ class DetectedSubject {
     }
 
     return DetectedSubject(
-      name: json['name'] as String? ?? '未知主體',
+      trackingId: json['tracking_id'] as int? ?? -1,
+      label: json['label'] as String? ?? '未知主體',
+      isMainSubject: json['is_main_subject'] as bool? ?? false,
       boundingBox: parseBox(json['bounding_box']),
     );
   }
@@ -114,12 +121,12 @@ class ActionPlan {
 
 @immutable
 class Movement {
-  final String subjectName;
+  final int trackingId; // ⭐️ 新增：取代 subjectName，用 ID 精準鎖定
   final List<double> targetBoundingBox;
   final String directionHint;
 
   const Movement({
-    required this.subjectName,
+    required this.trackingId,
     required this.targetBoundingBox,
     required this.directionHint,
   });
@@ -133,7 +140,7 @@ class Movement {
     }
 
     return Movement(
-      subjectName: json['subject_name'] as String? ?? '',
+      trackingId: json['tracking_id'] as int? ?? -1,
       targetBoundingBox: parseBox(json['target_bounding_box']),
       directionHint: json['direction_hint'] as String? ?? '',
     );
@@ -190,7 +197,7 @@ class GeminiCompositionService {
   late final GenerativeModel _model;
   final bool hasApiKey;
 
-  GeminiCompositionService({String modelName = 'gemini-2.5-flash-lite'})
+  GeminiCompositionService({String modelName = 'gemini-2.5-flash'})
       : hasApiKey = (dotenv.env['GEMINI_API_KEY'] ?? '').isNotEmpty {
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
     if (!hasApiKey) {
@@ -206,45 +213,51 @@ class GeminiCompositionService {
     );
   }
 
-  static const _promptText = '''
-你是一個頂級的「AI 攝影代理人 (AI Photography Agent)」。你的任務是透過分析使用者的相機預覽畫面，自主規劃並給出最佳的構圖引導座標與攝影建議。
+  // ⭐️ 替換為最新升級版，包含動態 {{DETECTED_BOXES}} 的 Prompt
+  static const _promptTemplate = '''
+你是一個頂級的「AI Photography Agent」。你的任務是透過分析使用者的相機畫面，以及系統預先提供給你的物件邊界框 (Bounding Box)，自主規劃並給出最佳的構圖引導座標與攝影建議。
+
+【動態輸入資料】
+我會附上一張目前的預覽畫面照片，並且系統已經在畫面中標記了以下潛在物件的位置與 Tracking ID：
+{{DETECTED_BOXES}}
+(格式為：ID: [x_min, y_min, x_max, y_max])
 
 【你的可用工具箱 (Tools)】
 你必須根據畫面場景，從以下工具中選擇「一個」最適合的構圖工具 (請輸出對應的 Tool_ID)：
 
 ▶ 人像場景 (Portrait)
-- Tool_ID: "Portrait_RuleOfThirds" (三分法構圖)：將人物主體置於 3x3 交點處，畫面更穩定有張力，自然引導視線。
-- Tool_ID: "Portrait_NegativeSpace" (留白構圖)：利用留白空間讓人物主體更清晰，營造簡約美感與故事性。
-- Tool_ID: "Portrait_Framing" (框架構圖)：用窗框、樹枝或門框構成自然畫框突顯人物，加強畫面深度。
+- Tool_ID: "Portrait_RuleOfThirds" (三分法構圖)：將人物主體置於 3x3 交點處。
+- Tool_ID: "Portrait_NegativeSpace" (留白構圖)：利用留白空間讓人物主體更清晰。
+- Tool_ID: "Portrait_Framing" (框架構圖)：用窗框、樹枝或門框構成自然畫框突顯人物。
 
 ▶ 美食場景 (Food)
-- Tool_ID: "Food_FlatLay" (鳥瞰圖)：從上方俯視拍攝，呈現食物排列與紋理，視覺重心落在中央。
+- Tool_ID: "Food_FlatLay" (鳥瞰圖)：從上方俯視拍攝，視覺重心落在中央。
 - Tool_ID: "Food_Centered" (中心構圖)：把餐點放在畫面中心，對稱穩定，適合特寫。
-- Tool_ID: "Food_Diagonal" (對角線構圖)：沿對角線排布元素，增強畫面的動感與延伸節奏感。
+- Tool_ID: "Food_Diagonal" (對角線構圖)：沿對角線排布元素，增強畫面的動感。
 
 ▶ 風景場景 (Landscape)
-- Tool_ID: "Landscape_RuleOfThirds" (三分法構圖)：地平線與主題依三分法安排，前景與遠景層次明確。
-- Tool_ID: "Landscape_Symmetry" (對稱構圖)：用左右或上下對稱的建築與景物營造寧靜穩定感。
-- Tool_ID: "Landscape_LeadingLines" (引導線構圖)：讓道路、鐵軌或建築線條引導觀眾視線，帶出深度和方向感。
+- Tool_ID: "Landscape_RuleOfThirds" (三分法構圖)：地平線與主題依三分法安排。
+- Tool_ID: "Landscape_Symmetry" (對稱構圖)：用左右或上下對稱的建築與景物營造寧靜感。
+- Tool_ID: "Landscape_LeadingLines" (引導線構圖)：讓線條引導觀眾視線，帶出深度。
 
 【你的思考與執行流程 (Agentic Flow)】
-接收到照片後，嚴格執行以下四個步驟：
-1. [感知]：辨識畫面中的主要物件、場景類型 (人像/美食/風景)，並執行光線分析與線條偵測，最後確認主體目前的螢幕座標位置與大小。
-2. [推論]：評估目前畫面的缺點（如：主體偏離、失去平衡、未利用場景延伸感、距離過近或過遠）。
+接收到照片與邊界框數據後，嚴格執行以下四個步驟：
+1. [感知]：查看照片與提供的 Tracking ID 座標。為這些 ID 賦予精確的 Label 名稱，判斷目前的場景類型 (人像/美食/風景)，並從中挑選出「一個」最適合當作攝影主體的 ID。
+2. [推論]：評估該主體目前的構圖缺點（如：主體偏離、失去平衡、距離過近或過遠）。
 3. [工具調用]：決定調用上述哪一個 Tool_ID 來解決問題。
-4. [輸出]：評估主體的「可移動性」。若主體不可動（如風景、建築），須引導「相機」移動；若主體可動（如人物、飯菜），可建議平移相機或微調物體。計算出主體建議的目標位置與目標大小，並給出具體的距離提示。
+4. [輸出]：針對選定的主體 ID，計算出建議的「目標位置與目標大小 (target_bounding_box)」，並給出具體的距離/平移提示。
 
 【輸出格式限制 (CRITICAL)】
 你只能輸出純 JSON 格式的文字，絕對不能包含 Markdown 標記 (如 ```json) 或其他廢話。所有座標數值必須是 0.0 到 1.0 之間的浮點數（原點 0,0 位於左上角）。
-"detected_subjects"跟"movements"的項目必須完全一致
+"detected_subjects" 與 "movements" 的項目必須完全對應。
 
 【深度與框線大小規則 (Z-axis Depth)】
-- 黃框 (bounding_box)：代表主體目前的位置與大小。
-- 藍框 (target_bounding_box)：代表建議的目標位置與大小。
+- bounding_box：代表主體目前的位置與大小 (來自系統輸入)。
+- target_bounding_box：代表建議的目標位置與大小。
 - 距離提示：
-  - 如果你需要使用者「後退」(拉開空間)，藍框的長寬比例必須「小於」黃框。
-  - 如果你需要使用者「靠近」(填滿畫面)，藍框的長寬比例必須「大於」黃框。
-  - 如果只需平移，藍框大小需與黃框一致。
+  - 如果你需要使用者「後退」(拉開空間)，目標框的長寬比例必須「小於」目前框。
+  - 如果你需要使用者「靠近」(填滿畫面)，目標框的長寬比例必須「大於」目前框。
+  - 如果只需平移，目標框大小需與目前框一致。
 
 請嚴格遵守以下 Schema：
 
@@ -258,7 +271,9 @@ class GeminiCompositionService {
   "perception": {
     "detected_subjects": [
       {
-        "name": "字串，主體名稱",
+        "tracking_id": 整數,
+        "label": "字串，你辨識出的精準物件名稱",
+        "is_main_subject": 布林值,
         "bounding_box": [x_min, y_min, x_max, y_max]
       }
     ]
@@ -267,9 +282,9 @@ class GeminiCompositionService {
     "selected_tool": "字串，必須是工具箱中的確切 Tool_ID",
     "movements": [
       {
-        "subject_name": "字串，對應偵測到的主體",
+        "tracking_id": 整數，對應被選為主體的 ID,
         "target_bounding_box": [x_min, y_min, x_max, y_max],
-        "direction_hint": "字串，包含具體平移與前後深度的提示。例如：向右平移並後退兩步，讓主體縮小對齊藍框。"
+        "direction_hint": "字串，包含具體平移與前後深度的提示。例如：將相機向右平移並後退兩步，讓主體縮小對齊藍框。"
       }
     ],
     "ui_guides": {
@@ -280,21 +295,31 @@ class GeminiCompositionService {
 }
 
 【範例學習 (Few-Shot Examples)】
-範例一 (需要後退與平移的情境)：
-輸入：一張拉麵拍得太近，且偏向畫面左下角的照片。
-輸出：
+動態輸入範例：
+ID 1: [0.10, 0.50, 0.80, 0.90] (畫面左下方的巨大物體)
+ID 2: [0.70, 0.10, 0.85, 0.30] (右上方的杯子)
+
+輸出範例：
 {
   "scene_type": "美食",
   "reasoning_steps": [
-    "[感知] 偵測到畫面主體為「拉麵」，目前佔據畫面比例過大，且重心偏向左下角。",
+    "[感知] 查看輸入座標與畫面，ID 1 為「拉麵」，佔據畫面過大且偏左下；ID 2 為「茶杯」。決定將 ID 1 (拉麵) 設為核心主體。",
     "[推論] 需要拉開空間深度並適度留白，目前的構圖讓畫面顯得擁擠，右上角過於空洞。",
     "[工具調用] 決定調用「Food_Diagonal」，並要求使用者稍微後退以縮小主體比例，同時將主體引導至右上方。"
   ],
   "perception": {
     "detected_subjects": [
       {
-        "name": "拉麵",
-        "bounding_box": [0.10, 0.50, 0.80, 0.90] 
+        "tracking_id": 1,
+        "label": "拉麵",
+        "is_main_subject": true,
+        "bounding_box": [0.10, 0.50, 0.80, 0.90]
+      },
+      {
+        "tracking_id": 2,
+        "label": "茶杯",
+        "is_main_subject": false,
+        "bounding_box": [0.70, 0.10, 0.85, 0.30]
       }
     ]
   },
@@ -302,9 +327,9 @@ class GeminiCompositionService {
     "selected_tool": "Food_Diagonal",
     "movements": [
       {
-        "subject_name": "拉麵",
+        "tracking_id": 1,
         "target_bounding_box": [0.60, 0.20, 0.90, 0.50],
-        "direction_hint": "將相機向左下方平移，並向後退拉開距離，讓麵碗縮小至藍框大小"
+        "direction_hint": "將相機向左下方平移，並向後退拉開距離，讓拉麵縮小至藍框大小"
       }
     ],
     "ui_guides": {
@@ -315,8 +340,32 @@ class GeminiCompositionService {
 }
 ''';
 
-  Future<AiSuggestion> analyzeComposition(Uint8List imageBytes) async {
-    final prompt = TextPart(_promptText);
+  /// ⭐️ 輔助方法：將傳入的 NormalizedBox 陣列轉為純文字，供 Prompt 使用
+  String _generateDetectedBoxesText(List<NormalizedBox> boxes) {
+    if (boxes.isEmpty) return "目前未偵測到任何明確物件。";
+    
+    StringBuffer sb = StringBuffer();
+    for (var box in boxes) {
+      // 限制小數點位數，減少 Token 消耗
+      final left = box.rect.left.toStringAsFixed(2);
+      final top = box.rect.top.toStringAsFixed(2);
+      final right = box.rect.right.toStringAsFixed(2);
+      final bottom = box.rect.bottom.toStringAsFixed(2);
+      
+      sb.writeln("ID ${box.trackingId}: [$left, $top, $right, $bottom]");
+    }
+    return sb.toString();
+  }
+
+  /// ⭐️ 核心方法：加入 boxes 參數
+  Future<AiSuggestion> analyzeComposition(Uint8List imageBytes, List<NormalizedBox> boxes) async {
+    // 1. 動態組裝 Prompt
+    final boxesText = _generateDetectedBoxesText(boxes);
+    final finalPrompt = _promptTemplate.replaceAll('{{DETECTED_BOXES}}', boxesText);
+    
+    debugPrint('=== 發送給 Gemini 的動態 Boxes ===\n$boxesText');
+
+    final prompt = TextPart(finalPrompt);
     final imagePart = DataPart('image/png', imageBytes);
 
     late final String responseText;

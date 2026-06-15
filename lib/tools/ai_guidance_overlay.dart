@@ -8,6 +8,7 @@ class AIGuidanceOverlay extends StatelessWidget {
   final Rect? targetRect;  
   final String subjectLabel;
   final List<GuideLine>? guideLines;
+  final bool isAligned; // ⭐️ 接收從 Camera 傳來的對齊狀態
 
   const AIGuidanceOverlay({
     super.key,
@@ -16,6 +17,7 @@ class AIGuidanceOverlay extends StatelessWidget {
     this.targetRect,
     this.subjectLabel = '',
     this.guideLines,
+    this.isAligned = false,
   });
 
   @override
@@ -28,6 +30,7 @@ class AIGuidanceOverlay extends StatelessWidget {
         currentRect: currentRect,
         targetRect: targetRect,
         guideLines: guideLines,
+        isAligned: isAligned, // ⭐️ 將對齊狀態傳遞給 Painter
       ),
     );
   }
@@ -37,31 +40,33 @@ class _BoxGuidancePainter extends CustomPainter {
   final Rect? currentRect;
   final Rect? targetRect;
   final List<GuideLine>? guideLines;
+  final bool isAligned; // ⭐️ Painter 接收對齊狀態
 
   _BoxGuidancePainter({
     this.currentRect, 
     this.targetRect, 
     this.guideLines,
+    required this.isAligned, // ⭐️ 必填參數
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 黃色框 (現在位置)
+    // ⭐️ 黃色框 (現在位置) - 如果對齊則變為綠色
     if (currentRect != null) {
-      final yellowPaint = Paint()
-        ..color = Colors.amber
+      final currentPaint = Paint()
+        ..color = isAligned ? Colors.greenAccent : Colors.amber
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2.0;
-      canvas.drawRect(currentRect!, yellowPaint);
+      canvas.drawRect(currentRect!, currentPaint);
     }
 
-    // 藍色框 (目標位置)
+    // ⭐️ 藍色框 (目標位置) - 如果對齊則變為綠色
     if (targetRect != null) {
-      final bluePaint = Paint()
-        ..color = const Color(0xFF0A58F5)
+      final targetPaint = Paint()
+        ..color = isAligned ? Colors.greenAccent : const Color(0xFF0A58F5)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3.0;
-      canvas.drawRect(targetRect!, bluePaint);
+      canvas.drawRect(targetRect!, targetPaint);
     }
 
     // 構圖輔助線 (如延伸線)
@@ -79,8 +84,8 @@ class _BoxGuidancePainter extends CustomPainter {
       }
     }
 
-    // 位移箭頭
-    if (currentRect != null && targetRect != null) {
+    // ⭐️ 位移箭頭 - 加入 `!isAligned` 判斷，如果對齊了就不要再畫箭頭了
+    if (currentRect != null && targetRect != null && !isAligned) {
       final arrowPaint = Paint()
         ..color = Colors.red
         ..style = PaintingStyle.stroke
@@ -123,8 +128,10 @@ class _BoxGuidancePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _BoxGuidancePainter oldDelegate) {
+    // ⭐️ 當 isAligned 改變時也要觸發重新繪製
     return oldDelegate.currentRect != currentRect ||
            oldDelegate.targetRect != targetRect ||
-           oldDelegate.guideLines != guideLines;
+           oldDelegate.guideLines != guideLines ||
+           oldDelegate.isAligned != isAligned;
   }
 }

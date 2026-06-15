@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 import 'dart:typed_data';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -13,6 +14,7 @@ import '../tools/ai_guidance_overlay.dart';
 import '../tools/agent_thinking_log.dart';
 import '../tools/composition_overlay_manager.dart';
 import '../tools/gemini_composition_service.dart';
+import '../tools/object_detector_service.dart'; // ⭐️ 引入你寫好的 Service
 import '../providers/camera_provider.dart';
 import '../main.dart' show cameras;
 import 'package:gal/gal.dart';
@@ -30,7 +32,6 @@ class FullScreenCameraScreen extends StatefulWidget {
 
 class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   Uint8List? _frozenFrameBytes;
-  File? _testImageFile;
   CameraWorkflow _workflow = CameraWorkflow.live;
   String _subjectLabel = '分析中...';
 
@@ -39,14 +40,21 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   String _currentComposition = 'none';
   final GlobalKey _previewKey = GlobalKey();
 
+// ⭐️ 新增：ML Kit 狀態追蹤變數
+  bool _isDetecting = false;
+  DateTime? _lastProcessTime; // ⭐️ 新增：用於記錄上一次處理影像的時間
+  DetectionResult? _latestDetection;
+  int? _lockedTrackingId; // 儲存 Gemini 決定鎖定的 ID
+  bool _showDebugBoxes = false;
+
   Rect? _currentSubjectRect;
   Rect? _targetSubjectRect;
   List<String> _reasoningSteps = [];
   String _directionHint = '';
   List<GuideLine> _guideLines = [];
 
-  List<Rect> _allDebugRects = [];
-  // final ObjectDetectorService _detectorService = ObjectDetectorService();
+  // ⭐️ 解開 ML Kit Service 的封印
+  final ObjectDetectorService _detectorService = ObjectDetectorService();
   final GeminiCompositionService _geminiService = GeminiCompositionService();
 
   CameraController? _controller;
@@ -55,11 +63,12 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   @override
   void initState() {
     super.initState();
-    // _detectorService.initialize();
+    _detectorService.initialize(); // ⭐️ 初始化 ML Kit
 
     if (widget.cameraController != null) {
       _controller = widget.cameraController;
       _isCameraInitializing = false;
+      _startImageStream(); // ⭐️ 啟動影像串流
     } else {
       _initOwnCamera();
     }
@@ -70,7 +79,6 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       if (mounted) setState(() => _isCameraInitializing = false);
       return;
     }
-
     await _initializeCamera();
   }
 
@@ -86,34 +94,96 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
       final controller = CameraController(
         backCamera,
-        ResolutionPreset.high,
+        ResolutionPreset.high, // ⭐️ 關鍵修改：將 high 改為 medium
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
-
       await controller.initialize();
 
       if (!mounted) {
         await controller.dispose();
         return;
       }
+      
       setState(() {
         _controller = controller;
         _isCameraInitializing = false;
       });
+      
+      _startImageStream(); // ⭐️ 相機準備好後，開始持續餵畫面給 ML Kit
+
     } catch (e) {
       debugPrint('相機初始化失敗: $e');
       if (mounted) setState(() => _isCameraInitializing = false);
     }
   }
 
-  @override
+  /// ⭐️ 啟動即時影像串流給 ML Kit 偵測
+  void _startImageStream() {
+    if (_controller?.value.isStreamingImages == false) {
+      _controller?.startImageStream(_processCameraImage);
+    }
+  }
+
+  Future<void> _processCameraImage(CameraImage image) async {
+    // ⭐️ 修正：移除 150ms 的時間判斷，讓畫面保持連貫，ML Kit 才能追蹤特徵點！
+    // 只要依賴 _isDetecting 這個天然的鎖，就不會造成 GC 記憶體溢出。
+    if (_isDetecting || _workflow == CameraWorkflow.analyzing) return;
+    
+    _isDetecting = true;
+
+    try {
+      // 交給 Service 進行辨識
+      final result = await _detectorService.detectMainSubject(
+        image: image,
+        camera: _controller!.description,
+        deviceOrientation: MediaQuery.of(context).orientation,
+      );
+
+      if (mounted && result != null) {
+        setState(() {
+          _latestDetection = result;
+
+          // 動態追蹤：如果是在引導模式，持續更新黃框的位置！
+          if (_workflow == CameraWorkflow.guiding && _lockedTrackingId != null) {
+            final lockedBox = result.allBoxes
+                .where((b) => b.trackingId == _lockedTrackingId)
+                .firstOrNull;
+                
+            if (lockedBox != null) {
+              _currentSubjectRect = lockedBox.rect; // ML Kit 即時更新的最新座標
+            }
+          }
+        });
+      }
+    } catch (e) {
+      debugPrint('Object detection error: $e');
+    } finally {
+      _isDetecting = false;
+    }
+  }
+  
+
+  double _calculateIoU(Rect? rect1, Rect? rect2) {
+    if (rect1 == null || rect2 == null) return 0.0;
+
+    final intersection = rect1.intersect(rect2);
+    if (intersection.width < 0 || intersection.height < 0) {
+      return 0.0; // 沒有交集
+    }
+
+    final intersectionArea = intersection.width * intersection.height;
+    final unionArea = (rect1.width * rect1.height) + (rect2.width * rect2.height) - intersectionArea;
+
+    return intersectionArea / unionArea;
+  }
+
   void dispose() {
     if (_controller?.value.isStreamingImages == true) {
       _controller?.stopImageStream();
     }
     _controller?.dispose();
-    // _detectorService.dispose();
+    _detectorService.dispose(); // ⭐️ 釋放 ML Kit
     super.dispose();
   }
 
@@ -135,108 +205,93 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       _guideLines = [];
     });
 
-    // if (wasStreaming) {
-    //   await _stopTrackingStream();
-    // }
-    // await _controller?.pausePreview();
-
     try {
-      final boundary = _previewKey.currentContext?.findRenderObject()
-          as RenderRepaintBoundary?;
-      if (boundary == null) {
-        throw StateError('無法取得預覽畫面，請稍後再試');
-      }
+      final boundary = _previewKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) throw StateError('無法取得預覽畫面，請稍後再試');
 
       final ui.Image image = await boundary.toImage(pixelRatio: 2.0);
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        throw StateError('無法轉換預覽畫面資料');
-      }
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) throw StateError('無法轉換預覽畫面資料');
+      
       final Uint8List pngBytes = byteData.buffer.asUint8List();
 
       setState(() {
         _frozenFrameBytes = pngBytes;
       });
 
-      final suggestion = await _geminiService.analyzeComposition(pngBytes);
+      // ⭐️ 關鍵修改：將最新的 ML Kit 框框資訊連同截圖一併丟給 Gemini！
+      // 註：這需要你去 GeminiCompositionService 的 analyzeComposition 方法加上 boxes 參數
+      final latestBoxes = _latestDetection?.allBoxes ?? [];
+      final suggestion = await _geminiService.analyzeComposition(pngBytes, latestBoxes);
 
       if (!mounted) return;
 
       setState(() {
         _reasoningSteps = suggestion.reasoningSteps;
         _guideLines = suggestion.actionPlan.uiGuides.guideLines;
+        _currentComposition = suggestion.actionPlan.selectedTool;
 
-        // 解析現在位置(黃框)與主體名稱
-        if (suggestion.perception.detectedSubjects.isNotEmpty) {
-          final subject = suggestion.perception.detectedSubjects.first;
-          _subjectLabel = subject.name;
-
-          _currentSubjectRect = Rect.fromLTRB(
-              subject.boundingBox[0],
-              subject.boundingBox[1],
-              subject.boundingBox[2],
-              subject.boundingBox[3]);
-        }
-
-        // 解析目標位置(藍框)與距離提示
+        // ⭐️ 解析目標位置 (藍框) 與距離提示
         if (suggestion.actionPlan.movements.isNotEmpty) {
           final movement = suggestion.actionPlan.movements.first;
           _directionHint = movement.directionHint;
-
           _targetSubjectRect = Rect.fromLTRB(
-              movement.targetBoundingBox[0],
-              movement.targetBoundingBox[1],
-              movement.targetBoundingBox[2],
-              movement.targetBoundingBox[3]);
+              movement.targetBoundingBox[0], movement.targetBoundingBox[1],
+              movement.targetBoundingBox[2], movement.targetBoundingBox[3]);
+              
+          // ⭐️ 提取 Gemini 選出的終極目標 ID
+          _lockedTrackingId = movement.trackingId; 
         }
 
-        _currentComposition = suggestion.actionPlan.selectedTool;
+        // ⭐️ 解析現在位置 (黃框) 與主體名稱
+        if (suggestion.perception.detectedSubjects.isNotEmpty) {
+          // 找尋被選為主體的物件
+          final subject = suggestion.perception.detectedSubjects.firstWhere(
+            (s) => s.trackingId == _lockedTrackingId,
+            orElse: () => suggestion.perception.detectedSubjects.first
+          );
+          
+          _subjectLabel = subject.label; // 取得精準命名 (例如 "貓")
+          _currentSubjectRect = Rect.fromLTRB(
+              subject.boundingBox[0], subject.boundingBox[1],
+              subject.boundingBox[2], subject.boundingBox[3]);
+              
+          // ⭐️ 將大腦 (Gemini) 認出來的標籤與 ID，反向硬塞給眼睛 (ML Kit) 鎖定！
+          if (_lockedTrackingId != null) {
+            _detectorService.lockTargetFromGemini(_lockedTrackingId!, _subjectLabel);
+          }
+        }
+
         _isThinking = true;
       });
-
-      // ⭐️ 關鍵新增：把大腦 (Gemini) 認出來的標籤，告訴眼睛 (ML Kit)
-      // _detectorService.updateTargetLabel(suggestion.detectedSubject);
 
     } on GeminiParseException catch (e) {
       debugPrint('JSON Parsing Error: ${e.message}');
       debugPrint('Raw AI Response: ${e.rawResponse}');
-      await _controller?.resumePreview();
-      if (mounted) {
-        setState(() {
-          _workflow = CameraWorkflow.live;
-          _frozenFrameBytes = null;
-        });
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('AI 分析失敗，請再試一次')));
-      }
-    } on GeminiRequestException catch (e) {
-      debugPrint('Gemini API Error: ${e.message}');
-      await _controller?.resumePreview();
-      if (mounted) {
-        setState(() {
-          _workflow = CameraWorkflow.live;
-          _frozenFrameBytes = null;
-        });
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('連線錯誤，請檢查網路狀態')));
-      }
-    } on StateError catch (e) {
-      debugPrint('Gemini capture error: $e');
-      await _controller?.resumePreview();
-      if (mounted) {
-        setState(() {
-          _workflow = CameraWorkflow.live;
-          _frozenFrameBytes = null;
-        });
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('無法取得畫面，請再試一次')));
-      }
+      _resetToLive(errorMsg: 'AI 分析失敗，請再試一次');
+    } catch (e) {
+      debugPrint('Gemini Error: $e');
+      _resetToLive(errorMsg: '連線或處理錯誤，請再試一次');
     } finally {
       if (mounted) setState(() => _isProcessing = false);
     }
   }
 
+  void _resetToLive({String? errorMsg}) {
+    if (mounted) {
+      setState(() {
+        _workflow = CameraWorkflow.live;
+        _frozenFrameBytes = null;
+        _detectorService.resetLock(); // ⭐️ 發生錯誤或重置時解除 ML Kit 鎖定
+      });
+      if (errorMsg != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorMsg)));
+      }
+    }
+  }
+
+  // ... _takePicture 與 _showReasoningLogDialog 保持原本的實作不變 ...
+  /// ⭐️ 實際的拍照邏輯
   Future<void> _takePicture() async {
     final controller = _controller;
     if (controller == null || !controller.value.isInitialized) {
@@ -348,7 +403,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
       },
     );
   }
-
+  
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.of(context).size;
@@ -369,8 +424,9 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
             _targetSubjectRect!.bottom * screenSize.height,
           )
         : null;
-    final showGuidance = _workflow == CameraWorkflow.magicMoment ||
-        _workflow == CameraWorkflow.guiding;
+    final isAligned = _calculateIoU(_currentSubjectRect, _targetSubjectRect) > 0.85;
+
+    final showGuidance = _workflow == CameraWorkflow.magicMoment || _workflow == CameraWorkflow.guiding;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -385,23 +441,57 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                 if (_controller != null && _controller!.value.isInitialized)
                   CameraPreview(_controller!)
                 else if (_isCameraInitializing)
-                  const Center(
-                      child:
-                          CircularProgressIndicator(color: Color(0xFF0A58F5)))
+                  const Center(child: CircularProgressIndicator(color: Color(0xFF0A58F5)))
                 else
-                  const Center(
-                      child: Text('Camera Preview',
-                          style: TextStyle(color: Colors.white54))),
+                  const Center(child: Text('Camera Preview', style: TextStyle(color: Colors.white54))),
 
                 // 假凍結畫面層
                 if (_frozenFrameBytes != null)
                   Positioned.fill(
                     child: Image.memory(
                       _frozenFrameBytes!,
-                      fit: BoxFit.cover, // 確保圖片填滿預覽區域不變形
+                      fit: BoxFit.cover,
                     ),
                   ),
 
+                // ⭐️ 可選：如果在 live 模式你想顯示 ML Kit 即時抓到的所有未命名白框，可以加在這裡
+                // ⭐️ 修正顯示條件：讓 live 和 guiding 模式都能看到紅框，方便 Debug
+                if (_showDebugBoxes && 
+                    (_workflow == CameraWorkflow.live || _workflow == CameraWorkflow.guiding) && 
+                    _latestDetection != null)
+                  ..._latestDetection!.allBoxes.map((box) {
+                    return Positioned(
+                      left: box.rect.left * screenSize.width,
+                      top: box.rect.top * screenSize.height,
+                      width: box.rect.width * screenSize.width,
+                      height: box.rect.height * screenSize.height,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          // 如果這個框剛好是被 AI 鎖定的 ID，可以用不同顏色標示 (可選)
+                          border: Border.all(
+                            color: box.trackingId == _lockedTrackingId ? Colors.green : Colors.redAccent, 
+                            width: box.trackingId == _lockedTrackingId ? 3.0 : 2.0
+                          ),
+                        ),
+                        child: Align(
+                          alignment: Alignment.topLeft,
+                          child: Container(
+                            color: box.trackingId == _lockedTrackingId ? Colors.green : Colors.redAccent,
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            child: Text(
+                              'ID: ${box.trackingId}',
+                              style: const TextStyle(
+                                color: Colors.white, 
+                                fontSize: 12, 
+                                fontWeight: FontWeight.bold
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                
                 if (_workflow == CameraWorkflow.analyzing)
                   Container(
                     color: Colors.black.withOpacity(0.6),
@@ -409,30 +499,19 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // loading圈圈
-                          const CircularProgressIndicator(
-                              color: Color(0xFF0A58F5)),
+                          const CircularProgressIndicator(color: Color(0xFF0A58F5)),
                           const SizedBox(height: 16),
                           Text(
-                            !_isThinking
-                                ? '正在傳送照片給AI攝影助理...'
-                                : 'AI攝影助理正在分析畫面...', // 進入打字機時，文字稍微改變更符合情境
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold),
+                            !_isThinking ? '正在傳送照片給AI攝影助理...' : 'AI攝影助理正在分析畫面...',
+                            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                           ),
-
-                          // 在 Loading 下方顯示打字機動畫
                           if (_isThinking) ...[
                             const SizedBox(height: 32),
                             Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 24),
+                              padding: const EdgeInsets.symmetric(horizontal: 24),
                               child: AgentThinkingLog(
                                 steps: _reasoningSteps,
                                 onComplete: () {
-                                  // 轉到黃藍框畫面
                                   setState(() {
                                     _isThinking = false;
                                     _workflow = CameraWorkflow.magicMoment;
@@ -452,16 +531,14 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                 ),
                 AIGuidanceOverlay(
                   isVisible: showGuidance,
-                  currentRect: _workflow == CameraWorkflow.magicMoment
-                      ? yellowRect
-                      : null,
+                  // ⭐️ 只要進入 guiding，黃框就會吃 ML Kit 的動態座標
+                  currentRect: showGuidance ? yellowRect : null,
                   targetRect: blueRect,
                   subjectLabel: _subjectLabel,
+                  isAligned: isAligned,
                 ),
                 
-                // 查看思考按鈕
-                if (_workflow == CameraWorkflow.magicMoment ||
-                    _workflow == CameraWorkflow.guiding)
+                if (showGuidance)
                   Positioned(
                     right: 20,
                     top: 40,
@@ -486,34 +563,27 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
             ),
           ),
 
-          if (_workflow == CameraWorkflow.magicMoment ||
-              _workflow == CameraWorkflow.guiding)
+          if (showGuidance)
             Positioned(
               top: 100,
               left: 20,
               right: 20,
               child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
                     color: Colors.black87,
                     borderRadius: BorderRadius.circular(12),
-                    border:
-                        Border.all(color: const Color(0xFF0A58F5), width: 1.5)),
+                    border: Border.all(color: const Color(0xFF0A58F5), width: 1.5)),
                 child: Text(
                   _workflow == CameraWorkflow.magicMoment
                       ? '💡 AI 指示：$_directionHint'
                       : '請移動手機，將 [$_subjectLabel] 放入藍色光圈中。',
-                  style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold),
+                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
                   textAlign: TextAlign.center,
                 ),
               ),
             ),
 
-          // 開始移動按鈕
           if (_workflow == CameraWorkflow.magicMoment)
             Positioned(
               bottom: 150,
@@ -523,22 +593,17 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                 child: ElevatedButton.icon(
                   onPressed: () {
                     setState(() {
-                      _frozenFrameBytes = null; // 清空假照片，底層即時相機就會透出來
+                      _frozenFrameBytes = null; 
                       _workflow = CameraWorkflow.guiding;
                     });
                   },
                   icon: const Icon(Icons.compare_arrows, color: Colors.white),
                   label: const Text('開始移動',
-                      style: TextStyle(
-                          fontSize: 18,
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold)),
+                      style: TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF0A58F5),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 32, vertical: 16),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(30)),
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                     elevation: 8,
                   ),
                 ),
@@ -561,28 +626,52 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
   Widget _buildTopBar(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.4),
-              shape: BoxShape.circle,
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.close, color: Colors.white),
-              onPressed: () => Navigator.of(context).maybePop(),
-            ),
-          ),
+          // 左側按鈕群：關閉按鈕 + Debug 按鈕
           Row(
-            children: [],
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.4),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+              ),
+              const SizedBox(width: 12), // 加上間距
+              // ⭐️ 移到左側：切換顯示偵測紅框的按鈕
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.4),
+                  shape: BoxShape.circle,
+                ),
+                child: IconButton(
+                  icon: Icon(
+                    _showDebugBoxes ? Icons.visibility : Icons.visibility_off,
+                    color: _showDebugBoxes ? Colors.redAccent : Colors.white,
+                  ),
+                  tooltip: '切換 ML Kit 偵測框',
+                  onPressed: () {
+                    setState(() {
+                      _showDebugBoxes = !_showDebugBoxes;
+                    });
+                  },
+                ),
+              ),
+            ],
           ),
+          
+          // 右側：保持為空，留給下方 Stack 裡的 AI 思考按鈕 (Positioned: right: 20, top: 40)
+          const SizedBox.shrink(),
         ],
       ),
     );
   }
-
   Widget _buildBottomControls(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 20, left: 24, right: 24),
@@ -592,13 +681,12 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.white),
             onPressed: () {
-              if (_controller?.value.isStreamingImages == true) {
-                _controller?.stopImageStream();
-              }
+              // ⭐️ 清除鎖定並回到 Live 狀態
+              _detectorService.resetLock();
               setState(() {
                 _workflow = CameraWorkflow.live;
                 _currentComposition = 'none';
-                _allDebugRects = [];
+                _frozenFrameBytes = null;
               });
             },
           ),
@@ -615,8 +703,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                         .withOpacity(_isProcessing ? 0.5 : 1.0),
                     shape: BoxShape.circle,
                   ),
-                  child:
-                      const Icon(Icons.camera, color: Colors.white, size: 34),
+                  child: const Icon(Icons.camera, color: Colors.white, size: 34),
                 ),
                 const SizedBox(height: 8),
               ],
@@ -627,8 +714,7 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                 ? const SizedBox(
                     width: 24,
                     height: 24,
-                    child: CircularProgressIndicator(
-                        color: Color(0xFF0A58F5), strokeWidth: 2.0),
+                    child: CircularProgressIndicator(color: Color(0xFF0A58F5), strokeWidth: 2.0),
                   )
                 : const Icon(Icons.auto_awesome, color: Colors.white, size: 28),
             onPressed: _captureAndAskGemini,
