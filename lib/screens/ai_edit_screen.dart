@@ -365,10 +365,14 @@ class _AiEditScreenState extends State<AiEditScreen> {
         });
       },
       child: Scaffold(
+        backgroundColor: Colors.black, // ⭐️ 確保 Scaffold 底色是純黑
         appBar: AppBar(
-          backgroundColor: Colors.transparent,
+          backgroundColor: Colors.black, // ⭐️ 鎖死背景為純黑
           elevation: 0,
-          title: const Text('AI 智能增強'),
+          scrolledUnderElevation: 0.0, // ⭐️ 關鍵魔法：關閉滾動時的陰影與顏色變化
+          surfaceTintColor: Colors.transparent, // ⭐️ 關鍵魔法：消除 Material 3 預設的表面渲染色
+          title: const Text('AI 智能增強', style: TextStyle(color: Colors.white)),
+          iconTheme: const IconThemeData(color: Colors.white), // 確保返回鍵是白色的
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () {
@@ -602,139 +606,205 @@ class _AiEditScreenState extends State<AiEditScreen> {
 
     return Column(
       children: [
-        GestureDetector(
-          onTap: () => _goToLibrary(context),
-          child: Container(
-            height: 200,
-            width: double.infinity,
-            color: Colors.black,
-            child: Stack(
-              children: [
-                if (path != null)
-                  Positioned.fill(
-                    child: _showOriginal
-                        ? _buildPreviewImage(path, fit: BoxFit.cover)
-                        : ImageFiltered(
-                            imageFilter: ui.ImageFilter.blur(
-                              sigmaX: (cameraProvider.currentEnhancements['sharpness'] ?? 0.0) < 0
-                                  ? -(cameraProvider.currentEnhancements['sharpness'] ?? 0.0) / 100 * 5
-                                  : 0,
-                              sigmaY: (cameraProvider.currentEnhancements['sharpness'] ?? 0.0) < 0
-                                  ? -(cameraProvider.currentEnhancements['sharpness'] ?? 0.0) / 100 * 5
-                                  : 0,
+        // ⭐️ 上半部：圖片展示區 (嚴格佔據 55% 空間)
+        Expanded(
+          flex: 55,
+          child: GestureDetector(
+            onTap: () => _goToLibrary(context),
+            child: Container(
+              width: double.infinity,
+              color: Colors.black, // 圖片背板保持純黑，不會干擾照片色彩
+              child: Stack(
+                children: [
+                  if (path != null)
+                    Positioned.fill(
+                      // 這裡使用 BoxFit.contain，照片會在 55% 空間內完美置中且絕不裁切
+                      child: _showOriginal
+                          ? _buildPreviewImage(path, fit: BoxFit.contain)
+                          : ImageFiltered(
+                              imageFilter: ui.ImageFilter.blur(
+                                sigmaX: (cameraProvider.currentEnhancements['sharpness'] ?? 0.0) < 0
+                                    ? -(cameraProvider.currentEnhancements['sharpness'] ?? 0.0) / 100 * 5
+                                    : 0,
+                                sigmaY: (cameraProvider.currentEnhancements['sharpness'] ?? 0.0) < 0
+                                    ? -(cameraProvider.currentEnhancements['sharpness'] ?? 0.0) / 100 * 5
+                                    : 0,
+                              ),
+                              child: ColorFiltered(
+                                colorFilter: ColorFilter.matrix(_buildPreviewColorMatrix(cameraProvider)),
+                                child: _buildPreviewImage(path, fit: BoxFit.contain), 
+                              ),
                             ),
-                            child: ColorFiltered(
-                              colorFilter: ColorFilter.matrix(_buildPreviewColorMatrix(cameraProvider)),
-                              child: _buildPreviewImage(path, fit: BoxFit.cover),
-                            ),
-                          ),
-                  )
-                else
-                  Center(child: Icon(Icons.image, size: 80, color: Colors.grey[700])),
-                Positioned(
-                  top: 16,
-                  right: 16,
-                  child: GestureDetector(
-                    onTap: () => setState(() => _showOriginal = !_showOriginal),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      decoration: BoxDecoration(color: Colors.blue, borderRadius: BorderRadius.circular(20)),
-                      child: Row(
-                        children: [
-                          Icon(_showOriginal ? Icons.visibility_off : Icons.visibility, size: 14),
-                          const SizedBox(width: 4),
-                          Text(_showOriginal ? '原圖' : '編輯後', style: const TextStyle(fontSize: 12)),
-                        ],
+                    )
+                  else
+                    Center(child: Icon(Icons.image, size: 80, color: Colors.grey[700])),
+                  
+                  // 右上角的「原圖/編輯後」切換按鈕
+                  Positioned(
+                    top: 16,
+                    right: 16,
+                    child: GestureDetector(
+                      onTap: () => setState(() => _showOriginal = !_showOriginal),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(color: Colors.blue, borderRadius: BorderRadius.circular(20)),
+                        child: Row(
+                          children: [
+                            Icon(_showOriginal ? Icons.visibility_off : Icons.visibility, size: 14),
+                            const SizedBox(width: 4),
+                            Text(_showOriginal ? '原圖' : '編輯後', style: const TextStyle(fontSize: 12)),
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
+        
+        // ⭐️ 下半部：控制面板區 (嚴格佔據 45% 空間)
         Expanded(
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: const EdgeInsets.only(top: 20),
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
+          flex: 45,
+          child: Container(
+            width: double.infinity,
+            // 加上頂部的圓角，並給予微亮的深灰色背景，創造出實體操作台的專業感
+            decoration: const BoxDecoration(
+              color: Color(0xFF1A1A1C), 
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 增加一個小小的把手裝飾，讓介面看起來更精緻
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[600],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[600],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                
+                // ⭐️ 新增：將標題與「回到 AI 建議」按鈕並排
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    const Text('調整', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                    // 只有在真的有 AI 建議時才顯示此按鈕
+                    if (cameraProvider.colorSuggestion != null)
+                      GestureDetector(
+                        onTap: () {
+                          // ⭐️ 點擊後：讀取 AI 最初的建議值，並覆寫回當前畫面的滑桿狀態
+                          final suggestion = cameraProvider.colorSuggestion!;
+                          cameraProvider.updateEnhancement('brightness', suggestion.brightness.value);
+                          cameraProvider.updateEnhancement('saturation', suggestion.saturation.value);
+                          cameraProvider.updateEnhancement('contrast', suggestion.contrast.value);
+                          cameraProvider.updateEnhancement('sharpness', suggestion.sharpness.value);
+                        },
+                        child: const Row(
+                          children: [
+                            Icon(Icons.auto_fix_high, size: 16, color: Color(0xFF0A58F5)),
+                            SizedBox(width: 4),
+                            Text('回到 AI 建議', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF0A58F5))),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                
+                // 滑桿區域 (利用 Expanded 填滿並開啟滑動，避免各種螢幕尺寸溢出)
+                Expanded(
+                  child: SingleChildScrollView(
+                    physics: const BouncingScrollPhysics(),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text('調整', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
-                        const SizedBox(height: 8),
                         _buildSliderControl(
                           label: '亮度',
                           value: cameraProvider.currentEnhancements['brightness'] ?? 0.0,
                           reason: cameraProvider.colorSuggestion?.brightness.reason,
                           onChanged: (v) => cameraProvider.updateEnhancement('brightness', v),
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         _buildSliderControl(
                           label: '飽和度',
                           value: cameraProvider.currentEnhancements['saturation'] ?? 0.0,
                           reason: cameraProvider.colorSuggestion?.saturation.reason,
                           onChanged: (v) => cameraProvider.updateEnhancement('saturation', v),
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         _buildSliderControl(
                           label: '對比度',
                           value: cameraProvider.currentEnhancements['contrast'] ?? 0.0,
                           reason: cameraProvider.colorSuggestion?.contrast.reason,
                           onChanged: (v) => cameraProvider.updateEnhancement('contrast', v),
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         _buildSliderControl(
                           label: '銳度',
                           value: cameraProvider.currentEnhancements['sharpness'] ?? 0.0,
                           reason: cameraProvider.colorSuggestion?.sharpness.reason,
                           onChanged: (v) => cameraProvider.updateEnhancement('sharpness', v),
                         ),
+                        const SizedBox(height: 8),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 24),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0066FF),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        onPressed: (path == null || _isSaving) ? null : () => _applyAndSave(path, cameraProvider),
-                        child: _isSaving
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.0),
-                              )
-                            : const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(Icons.auto_awesome),
-                                  SizedBox(width: 8),
-                                  Text('套用並儲存'),
-                                ],
-                              ),
-                      ),
+                ),
+                
+                const SizedBox(height: 16),
+                // 儲存按鈕
+                SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0066FF),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      elevation: 0,
                     ),
+                    onPressed: (path == null || _isSaving) ? null : () => _applyAndSave(path, cameraProvider),
+                    child: _isSaving
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2.0),
+                          )
+                        : const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.auto_awesome, size: 20),
+                              SizedBox(width: 8),
+                              Text('套用並儲存', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
                   ),
-                  const SizedBox(height: 20),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
       ],
     );
   }
-
   Widget _buildSliderControl({
     required String label,
     required double value,
