@@ -31,6 +31,7 @@ class ObjectDetectorService {
   
   // ⭐️ 2. 新增：AI 霸體鎖定開關
   bool _isAiLocked = false; 
+  Set<int> _ignoredTrackingIds = {};
 
   double? _smoothedX;
   double? _smoothedY;
@@ -44,6 +45,7 @@ class ObjectDetectorService {
     );
     _objectDetector = ObjectDetector(options: options);
     _isInitialized = true;
+    
   }
 
   void dispose() {
@@ -60,13 +62,16 @@ class ObjectDetectorService {
     _isAiLocked = false; // 解除 AI 鎖定
     _smoothedX = null;
     _smoothedY = null;
+    _ignoredTrackingIds.clear();
   }
-
-  // ⭐️ 3. 提供給 Gemini 鎖定的專屬方法
-  void lockTargetFromGemini(int trackingId, String label) {
+  
+  void lockTargetFromGemini(int trackingId, String label, {List<int> ignoredIds = const []}) {
     _lockedTrackingId = trackingId;
     _targetLabel = label;
-    _isAiLocked = true; // 啟動霸體！絕對不允許被其他物件搶走 ID
+    _isAiLocked = true;
+    _ignoredTrackingIds = ignoredIds.toSet(); // ⭐️ 將要忽略的 ID 存起來
+    
+    debugPrint('=== ML Kit 已套用黑名單: $_ignoredTrackingIds ===');
   }
 
   Future<DetectionResult?> detectMainSubject({
@@ -139,19 +144,23 @@ class ObjectDetectorService {
     // --- ⭐️ 4. 尋找與鎖定邏輯 (強化版) ---
     DetectedObject? targetObject;
     
-    // 優先找被鎖定的 ID
+    // 1. 優先找被鎖定的 ID (原本的主角)
     if (_lockedTrackingId != null) {
       targetObject = objects.where((obj) => obj.trackingId == _lockedTrackingId).firstOrNull;
     }
 
-    // 如果目標丟失了...
+    // 2. 如果目標丟失了...
     if (targetObject == null) {
       if (_isAiLocked) {
-        // 🚨 狀況 A：AI 已經鎖定了。絕對不能抓中間的窗戶！
-        // 尋回策略：在「最後消失的位置」附近尋找有沒有新出現的物體
+        // 🚨 狀況 A：AI 已經鎖定。尋找附近的新 ID 時，加入黑名單過濾！
         if (_smoothedX != null && _smoothedY != null) {
-          double bestDist = 0.05; // 允許的最大跳動半徑 (距離平方)
+          double bestDist = 0.05; 
           for (var obj in objects) {
+            // ⭐️ 核心防護：如果是被 Gemini 判定為背景的 ID，直接無視！
+            if (obj.trackingId != null && _ignoredTrackingIds.contains(obj.trackingId)) {
+              continue; 
+            }
+
             final rect = obj.boundingBox;
             final pos = transform(rect.left + rect.width / 2, rect.top + rect.height / 2);
             final distSq = pow(pos.dx - _smoothedX!, 2) + pow(pos.dy - _smoothedY!, 2).toDouble();
@@ -164,18 +173,21 @@ class ObjectDetectorService {
         }
 
         if (targetObject != null) {
-          // 成功找回！更新為 ML Kit 賦予的新 ID，繼續死死咬住貓咪
           _lockedTrackingId = targetObject.trackingId;
         }
-        // 如果還是找不到 (targetObject 依然為 null)，就不做任何事，保持黃框在原地等待。
         
       } else {
-        // 🚨 狀況 B：還在 Live 自由探索模式 (AI 尚未指定) -> 找最中間的物體
+        // 🚨 狀況 B：Live 自由探索模式 -> 找最中間的物體
         double bestDist = double.infinity;
         final centerImageX = domainWidth / 2;
         final centerImageY = domainHeight / 2;
         
         for (var obj in objects) {
+          // ⭐️ 這裡也可以套用黑名單防護
+          if (obj.trackingId != null && _ignoredTrackingIds.contains(obj.trackingId)) {
+            continue; 
+          }
+
           final rect = obj.boundingBox;
           final cx = rect.left + (rect.width / 2);
           final cy = rect.top + (rect.height / 2);
@@ -187,24 +199,8 @@ class ObjectDetectorService {
           }
         }
         if (targetObject != null) {
-          _lockedTrackingId = targetObject.trackingId; // 更新臨時追蹤 ID
+          _lockedTrackingId = targetObject.trackingId; 
         }
-      }
-    }
-
-    // --- 計算座標與 EMA 平滑化 ---
-    if (targetObject != null) {
-      final rect = targetObject.boundingBox;
-      final centerX = rect.left + (rect.width / 2);
-      final centerY = rect.top + (rect.height / 2);
-      final rawPos = transform(centerX, centerY);
-
-      if (_smoothedX == null || _smoothedY == null) {
-        _smoothedX = rawPos.dx;
-        _smoothedY = rawPos.dy;
-      } else {
-        _smoothedX = _alpha * rawPos.dx + (1 - _alpha) * _smoothedX!;
-        _smoothedY = _alpha * rawPos.dy + (1 - _alpha) * _smoothedY!;
       }
     }
 

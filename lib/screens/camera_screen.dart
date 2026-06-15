@@ -42,17 +42,17 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
 
 // ⭐️ 新增：ML Kit 狀態追蹤變數
   bool _isDetecting = false;
-  DateTime? _lastProcessTime; // ⭐️ 新增：用於記錄上一次處理影像的時間
   DetectionResult? _latestDetection;
   int? _lockedTrackingId; // 儲存 Gemini 決定鎖定的 ID
   bool _showDebugBoxes = false;
+  List<int> _currentIgnoredIds = [];
 
   Rect? _currentSubjectRect;
   Rect? _targetSubjectRect;
   List<String> _reasoningSteps = [];
   String _directionHint = '';
   List<GuideLine> _guideLines = [];
-
+  
   // ⭐️ 解開 ML Kit Service 的封印
   final ObjectDetectorService _detectorService = ObjectDetectorService();
   final GeminiCompositionService _geminiService = GeminiCompositionService();
@@ -145,13 +145,57 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           _latestDetection = result;
 
           // 動態追蹤：如果是在引導模式，持續更新黃框的位置！
+          // 動態追蹤與自動覺醒機制
           if (_workflow == CameraWorkflow.guiding && _lockedTrackingId != null) {
-            final lockedBox = result.allBoxes
-                .where((b) => b.trackingId == _lockedTrackingId)
-                .firstOrNull;
+            if (_lockedTrackingId == -1 && _currentSubjectRect != null) {
+              // ⭐️ 自動覺醒機制 (Auto-Awake)
+              // 處於 -1 幻影模式時，不斷掃描是否有新的框出現在幻影黃框附近
+              NormalizedBox? bestMatchBox;
+              double bestIoU = 0.0;
+              double minDistance = 0.4; // 容忍半徑 (距離小於畫面寬高比例的 30%)
+
+              for (var box in result.allBoxes) {
+                // 絕對不能是黑名單裡的背景 (例如窗戶、地板)
+                if (_currentIgnoredIds.contains(box.trackingId)) continue;
+
+                final iou = _calculateIoU(box.rect, _currentSubjectRect);
+                final boxCenter = box.rect.center;
+                final phantomCenter = _currentSubjectRect!.center;
+                final distance = (boxCenter - phantomCenter).distance;
+
+                // 條件：只要有一點點重疊，或是中心點距離夠近，就認為這隻貓咪現身了！
+                if (iou > 0.05 || distance < minDistance) {
+                  if (iou > bestIoU) {
+                    bestIoU = iou;
+                    bestMatchBox = box;
+                  } else if (bestIoU == 0.0 && distance < minDistance) {
+                    minDistance = distance;
+                    bestMatchBox = box;
+                  }
+                }
+              }
+
+              if (bestMatchBox != null) {
+                // 💡 成功覺醒！將 -1 替換成真正的 ML Kit ID
+                _lockedTrackingId = bestMatchBox.trackingId;
+                _currentSubjectRect = bestMatchBox.rect;
                 
-            if (lockedBox != null) {
-              _currentSubjectRect = lockedBox.rect; // ML Kit 即時更新的最新座標
+                // 通知底層 Service 正式鎖定這個新 ID，並保持原本的黑名單防護
+                _detectorService.lockTargetFromGemini(
+                  _lockedTrackingId!, 
+                  _subjectLabel,
+                  ignoredIds: _currentIgnoredIds
+                );
+              }
+            } else {
+              // 正常動態追蹤模式 (已鎖定真實 ID)
+              final lockedBox = result.allBoxes
+                  .where((b) => b.trackingId == _lockedTrackingId)
+                  .firstOrNull;
+                  
+              if (lockedBox != null) {
+                _currentSubjectRect = lockedBox.rect; // ML Kit 即時更新的最新座標
+              }
             }
           }
         });
@@ -243,25 +287,42 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
           _lockedTrackingId = movement.trackingId; 
         }
 
-        // ⭐️ 解析現在位置 (黃框) 與主體名稱
+        // ⭐️ 核心防呆邏輯：處理 tracking_id == -1 的情況
         if (suggestion.perception.detectedSubjects.isNotEmpty) {
-          // 找尋被選為主體的物件
-          final subject = suggestion.perception.detectedSubjects.firstWhere(
-            (s) => s.trackingId == _lockedTrackingId,
-            orElse: () => suggestion.perception.detectedSubjects.first
-          );
-          
-          _subjectLabel = subject.label; // 取得精準命名 (例如 "貓")
-          _currentSubjectRect = Rect.fromLTRB(
-              subject.boundingBox[0], subject.boundingBox[1],
-              subject.boundingBox[2], subject.boundingBox[3]);
-              
-          // ⭐️ 將大腦 (Gemini) 認出來的標籤與 ID，反向硬塞給眼睛 (ML Kit) 鎖定！
-          if (_lockedTrackingId != null) {
-            _detectorService.lockTargetFromGemini(_lockedTrackingId!, _subjectLabel);
+          _currentIgnoredIds = suggestion.actionPlan.ignoredTrackingIds; // ⭐️ 儲存黑名單
+
+          if (_lockedTrackingId != null && _lockedTrackingId != -1) {
+            // 狀況 A：AI 覺得框框大小合適，決定正式鎖定
+            final subject = suggestion.perception.detectedSubjects.firstWhere(
+              (s) => s.trackingId == _lockedTrackingId,
+              orElse: () => suggestion.perception.detectedSubjects.first
+            );
+            
+            _subjectLabel = subject.label;
+            _currentSubjectRect = Rect.fromLTRB(
+                subject.boundingBox[0], subject.boundingBox[1],
+                subject.boundingBox[2], subject.boundingBox[3]);
+                
+            _detectorService.lockTargetFromGemini(
+               _lockedTrackingId!, 
+               _subjectLabel,
+               ignoredIds: _currentIgnoredIds // 傳遞黑名單給 ML Kit！
+            );
+          } else {
+            // 🚨 狀況 B：AI 覺得貓咪太小沒有專屬框，回傳了 -1
+            final subject = suggestion.perception.detectedSubjects.first;
+            _subjectLabel = subject.label;
+            
+            _currentSubjectRect = Rect.fromLTRB(
+                subject.boundingBox[0], subject.boundingBox[1],
+                subject.boundingBox[2], subject.boundingBox[3]);
+                
+            _detectorService.resetLock(); 
+            
+            // 鎖定為 -1，套用黑名單防護
+            _detectorService.lockTargetFromGemini(-1, _subjectLabel, ignoredIds: _currentIgnoredIds);
           }
         }
-
         _isThinking = true;
       });
 
@@ -687,6 +748,12 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
                 _workflow = CameraWorkflow.live;
                 _currentComposition = 'none';
                 _frozenFrameBytes = null;
+                
+                // ⭐️ 確保把所有狀態徹底清空，才不會影響下一次辨識
+                _lockedTrackingId = null; 
+                _currentSubjectRect = null; 
+                _targetSubjectRect = null; 
+                _currentIgnoredIds = []; 
               });
             },
           ),

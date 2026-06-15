@@ -100,11 +100,13 @@ class ActionPlan {
   final String selectedTool;
   final List<Movement> movements;
   final UiGuides uiGuides;
+  final List<int> ignoredTrackingIds;
 
   const ActionPlan({
     required this.selectedTool,
     required this.movements,
     required this.uiGuides,
+    required this.ignoredTrackingIds,
   });
 
   factory ActionPlan.fromJson(Map<String, dynamic> json) {
@@ -115,6 +117,10 @@ class ActionPlan {
               .toList() ??
           [],
       uiGuides: UiGuides.fromJson(json['ui_guides'] ?? {}),
+      ignoredTrackingIds: (json['ignored_tracking_ids'] as List<dynamic>?)
+              ?.map((e) => e as int)
+              .toList() ??
+          [],
     );
   }
 }
@@ -222,69 +228,68 @@ class GeminiCompositionService {
 {{DETECTED_BOXES}}
 (格式為：ID: [x_min, y_min, x_max, y_max])
 
+【例外處理 (寧缺勿濫機制) - CRITICAL】
+你必須擁有「寧缺勿濫」的判斷力。
+1. 絕對禁止鎖定背景：絕對不可以選擇「環境結構與背景」（例如：窗戶、地板、牆壁、天花板、地毯、巨大的空書櫃）作為主體。
+2. 拒絕妥協：如果你發現照片中有真正的主體（例如小貓咪），但系統提供的 Bounding Box 列表卻「沒 有任何一個框」能剛好且緊密地包覆牠（例如只框住了整個窗戶或地板）：
+   - 請強制將主體與 movement 的 `tracking_id` 設為 `-1` (代表拒絕鎖定錯誤的框)。
+   - 將那些巨大的背景框 ID (如窗戶、地板) 全部放入 `ignored_tracking_ids` 黑名單中。
+   - 在 `direction_hint` 強烈提示：「請向前靠近 [真正的主體名稱]，讓系統能成功辨識」。
+
 【你的可用工具箱 (Tools)】
 你必須根據畫面場景，從以下工具中選擇「一個」最適合的構圖工具 (請輸出對應的 Tool_ID)：
 
 ▶ 人像場景 (Portrait)
-- Tool_ID: "Portrait_RuleOfThirds" (三分法構圖)：將人物主體置於 3x3 交點處。
-- Tool_ID: "Portrait_NegativeSpace" (留白構圖)：利用留白空間讓人物主體更清晰。
-- Tool_ID: "Portrait_Framing" (框架構圖)：用窗框、樹枝或門框構成自然畫框突顯人物。
+- Tool_ID: "Portrait_RuleOfThirds" (三分法)
+- Tool_ID: "Portrait_NegativeSpace" (留白)
+- Tool_ID: "Portrait_Framing" (框架)
 
 ▶ 美食場景 (Food)
-- Tool_ID: "Food_FlatLay" (鳥瞰圖)：從上方俯視拍攝，視覺重心落在中央。
-- Tool_ID: "Food_Centered" (中心構圖)：把餐點放在畫面中心，對稱穩定，適合特寫。
-- Tool_ID: "Food_Diagonal" (對角線構圖)：沿對角線排布元素，增強畫面的動感。
+- Tool_ID: "Food_FlatLay" (鳥瞰)
+- Tool_ID: "Food_Centered" (中心)
+- Tool_ID: "Food_Diagonal" (對角線)
 
 ▶ 風景場景 (Landscape)
-- Tool_ID: "Landscape_RuleOfThirds" (三分法構圖)：地平線與主題依三分法安排。
-- Tool_ID: "Landscape_Symmetry" (對稱構圖)：用左右或上下對稱的建築與景物營造寧靜感。
-- Tool_ID: "Landscape_LeadingLines" (引導線構圖)：讓線條引導觀眾視線，帶出深度。
+- Tool_ID: "Landscape_RuleOfThirds" (三分法)
+- Tool_ID: "Landscape_Symmetry" (對稱)
+- Tool_ID: "Landscape_LeadingLines" (引導線)
 
 【你的思考與執行流程 (Agentic Flow)】
 接收到照片與邊界框數據後，嚴格執行以下四個步驟：
-1. [感知]：查看照片與提供的 Tracking ID 座標。為這些 ID 賦予精確的 Label 名稱，判斷目前的場景類型 (人像/美食/風景)，並從中挑選出「一個」最適合當作攝影主體的 ID。
-2. [推論]：評估該主體目前的構圖缺點（如：主體偏離、失去平衡、距離過近或過遠）。
-3. [工具調用]：決定調用上述哪一個 Tool_ID 來解決問題。
-4. [輸出]：針對選定的主體 ID，計算出建議的「目標位置與目標大小 (target_bounding_box)」，並給出具體的距離/平移提示。
+1. [感知]：辨識場景與主體。如果沒有合適的框，啟用寧缺勿濫機制。
+2. [推論]：評估構圖缺點。
+3. [工具調用]：選擇 Tool_ID。
+4. [輸出]：給出目標座標與具體提示。
 
 【輸出格式限制 (CRITICAL)】
-你只能輸出純 JSON 格式的文字，絕對不能包含 Markdown 標記 (如 ```json) 或其他廢話。所有座標數值必須是 0.0 到 1.0 之間的浮點數（原點 0,0 位於左上角）。
-"detected_subjects" 與 "movements" 的項目必須完全對應。
-
-【深度與框線大小規則 (Z-axis Depth)】
-- bounding_box：代表主體目前的位置與大小 (來自系統輸入)。
-- target_bounding_box：代表建議的目標位置與大小。
-- 距離提示：
-  - 如果你需要使用者「後退」(拉開空間)，目標框的長寬比例必須「小於」目前框。
-  - 如果你需要使用者「靠近」(填滿畫面)，目標框的長寬比例必須「大於」目前框。
-  - 如果只需平移，目標框大小需與目前框一致。
-
-請嚴格遵守以下 Schema：
+只能輸出純 JSON 格式的文字，不能包含 Markdown 標記 (如 ```json)。所有座標必須是 0.0 到 1.0 的浮點數。
+請嚴格遵守以下 Schema (注意 tracking_id 可以為 -1)：
 
 {
   "scene_type": "字串 (人像/美食/風景)",
   "reasoning_steps": [
-    "[感知] 你的感知分析...",
-    "[推論] 你的推論過程...",
-    "[工具調用] 你決定調用的工具與原因..."
+    "[感知] ...",
+    "[推論] ...",
+    "[工具調用] ..."
   ],
   "perception": {
     "detected_subjects": [
       {
-        "tracking_id": 整數,
-        "label": "字串，你辨識出的精準物件名稱",
+        "tracking_id": 整數 (若無合適框請填 -1),
+        "label": "字串，精準物件名稱",
         "is_main_subject": 布林值,
-        "bounding_box": [x_min, y_min, x_max, y_max]
+        "bounding_box": [x_min, y_min, x_max, y_max] // ⭐️ 即使 tracking_id 為 -1，也請你憑藉視覺能力，自己填入該主體在畫面中的實際座標！
       }
     ]
   },
   "action_plan": {
-    "selected_tool": "字串，必須是工具箱中的確切 Tool_ID",
+    "selected_tool": "確切 Tool_ID",
+    "ignored_tracking_ids": [整數, 整數], // 背景或雜物的 ID
     "movements": [
       {
-        "tracking_id": 整數，對應被選為主體的 ID,
+        "tracking_id": 整數 (對應主體的 ID，可為 -1),
         "target_bounding_box": [x_min, y_min, x_max, y_max],
-        "direction_hint": "字串，包含具體平移與前後深度的提示。例如：將相機向右平移並後退兩步，讓主體縮小對齊藍框。"
+        "direction_hint": "具體的提示..."
       }
     ],
     "ui_guides": {
@@ -295,51 +300,50 @@ class GeminiCompositionService {
 }
 
 【範例學習 (Few-Shot Examples)】
-動態輸入範例：
-ID 1: [0.10, 0.50, 0.80, 0.90] (畫面左下方的巨大物體)
-ID 2: [0.70, 0.10, 0.85, 0.30] (右上方的杯子)
-
-輸出範例：
+範例一：正常情況
+動態輸入：
+ID 1: [0.10, 0.50, 0.80, 0.90] (拉麵)
+ID 2: [0.70, 0.10, 0.85, 0.30] (茶杯)
+輸出 JSON：
 {
   "scene_type": "美食",
-  "reasoning_steps": [
-    "[感知] 查看輸入座標與畫面，ID 1 為「拉麵」，佔據畫面過大且偏左下；ID 2 為「茶杯」。決定將 ID 1 (拉麵) 設為核心主體。",
-    "[推論] 需要拉開空間深度並適度留白，目前的構圖讓畫面顯得擁擠，右上角過於空洞。",
-    "[工具調用] 決定調用「Food_Diagonal」，並要求使用者稍微後退以縮小主體比例，同時將主體引導至右上方。"
-  ],
+  "reasoning_steps": [ "[感知] ID 1 為拉麵，設為主體...", "[推論] 畫面擁擠...", "[工具調用] 調用 Food_Diagonal" ],
   "perception": {
     "detected_subjects": [
-      {
-        "tracking_id": 1,
-        "label": "拉麵",
-        "is_main_subject": true,
-        "bounding_box": [0.10, 0.50, 0.80, 0.90]
-      },
-      {
-        "tracking_id": 2,
-        "label": "茶杯",
-        "is_main_subject": false,
-        "bounding_box": [0.70, 0.10, 0.85, 0.30]
-      }
+      { "tracking_id": 1, "label": "拉麵", "is_main_subject": true, "bounding_box": [0.10, 0.50, 0.80, 0.90] },
+      { "tracking_id": 2, "label": "茶杯", "is_main_subject": false, "bounding_box": [0.70, 0.10, 0.85, 0.30] }
     ]
   },
   "action_plan": {
     "selected_tool": "Food_Diagonal",
-    "movements": [
-      {
-        "tracking_id": 1,
-        "target_bounding_box": [0.60, 0.20, 0.90, 0.50],
-        "direction_hint": "將相機向左下方平移，並向後退拉開距離，讓拉麵縮小至藍框大小"
-      }
-    ],
-    "ui_guides": {
-      "show_grid": false,
-      "guide_lines": [{"start": [0.0, 1.0], "end": [1.0, 0.0]}]
-    }
+    "ignored_tracking_ids": [2],
+    "movements": [ { "tracking_id": 1, "target_bounding_box": [0.60, 0.20, 0.90, 0.50], "direction_hint": "相機向左下平移並後退" } ],
+    "ui_guides": { "show_grid": false, "guide_lines": [] }
+  }
+}
+
+範例二：主體太小，啟動寧缺勿濫 (-1 機制)
+動態輸入：
+ID 15: [0.10, 0.20, 0.90, 0.80] (窗戶)
+ID 7: [0.70, 0.10, 0.95, 0.90] (書櫃)
+(畫面中有一隻小貓，但沒有對應的 ID)
+輸出 JSON：
+{
+  "scene_type": "人像",
+  "reasoning_steps": [ "[感知] 畫面上有一隻小貓，但 ID 15 是窗戶、ID 7 是書櫃，無適合框，啟用寧缺勿濫機制。", "[推論] 貓咪過小無法追蹤。", "[工具調用] 選擇 Portrait_RuleOfThirds" ],
+  "perception": {
+    "detected_subjects": [
+      { "tracking_id": -1, "label": "小貓", "is_main_subject": true, "bounding_box": [0.55, 0.60, 0.65, 0.75] }
+    ]
+  },
+  "action_plan": {
+    "selected_tool": "Portrait_RuleOfThirds",
+    "ignored_tracking_ids": [15, 7],
+    "movements": [ { "tracking_id": -1, "target_bounding_box": [0.50, 0.50, 0.80, 0.80], "direction_hint": "請向前靠近 小貓，讓系統能成功辨識" } ],
+    "ui_guides": { "show_grid": true, "guide_lines": [] }
   }
 }
 ''';
-
   /// ⭐️ 輔助方法：將傳入的 NormalizedBox 陣列轉為純文字，供 Prompt 使用
   String _generateDetectedBoxesText(List<NormalizedBox> boxes) {
     if (boxes.isEmpty) return "目前未偵測到任何明確物件。";
