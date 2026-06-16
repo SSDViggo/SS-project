@@ -12,7 +12,9 @@ class AuthService {
   // ⭐️ V7 重大改變 2：必須手動呼叫初始化
   Future<void> _ensureInitialized() async {
     if (!_isInitialized) {
-      await _googleSignIn.initialize();
+      await _googleSignIn.initialize(
+        serverClientId: '467846370473-ur503lho2lt9304d0rbd6bs74ljeik4g.apps.googleusercontent.com',
+      );
       _isInitialized = true;
     }
   }

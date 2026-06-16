@@ -25,8 +25,8 @@ android {
 
     defaultConfig {
         applicationId = "com.example.flutter_app"
-        minSdk = flutter.minSdkVersion  // ⬅️ 為了支援 ML Kit，這裡必須寫死 23
-        targetSdk = flutter.targetSdkVersion // ⬅️ 修正：從 targetSdkVersion 改為 targetSdk
+        minSdk = flutter.minSdkVersion  // 💡 真正硬寫成 23，不要用 flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
     }

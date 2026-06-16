@@ -354,64 +354,72 @@ class _FullScreenCameraScreenState extends State<FullScreenCameraScreen> {
   // ... _takePicture 與 _showReasoningLogDialog 保持原本的實作不變 ...
   /// ⭐️ 實際的拍照邏輯
   Future<void> _takePicture() async {
-    final controller = _controller;
-    if (controller == null || !controller.value.isInitialized) {
+  final controller = _controller;
+  if (controller == null || !controller.value.isInitialized) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('相機尚未初始化')),
+    );
+    return;
+  }
+  if (_isProcessing) return;
+
+  // 💡 修正點 1：不要用 await 強行卡死底層硬體串流，改用 workflow 狀態來讓辨識暫停
+  if (controller.value.isStreamingImages) {
+    controller.stopImageStream(); 
+  }
+
+  debugPrint('takePicture: start');
+  setState(() => _isProcessing = true);
+
+  try {
+    // 拍下照片
+    final XFile rawFile = await controller.takePicture();
+    debugPrint('takePicture: captured rawFile=${rawFile.path}');
+
+    // 複製到 App 內部資料夾
+    final directory = await getApplicationDocumentsDirectory();
+    final fileName = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final savedPath = '${directory.path}/$fileName';
+    await File(rawFile.path).copy(savedPath);
+    debugPrint('takePicture: saved local copy at $savedPath');
+
+    if (!mounted) return;
+    context.read<CameraProvider>().addPhoto(savedPath);
+
+    // 💡 修正點 2：去專案的 `repositories/photo_repo.dart` 裡，
+    // 確保 putFile 裡有加上 SettableMetadata(contentType: 'image/jpeg')。
+    final photoRepo = PhotoRepository();
+    debugPrint('takePicture: uploading file to Firebase');
+    
+    final uploadedUrl = await photoRepo.uploadPhoto(File(savedPath));
+    debugPrint('takePicture: Firebase upload successful: $uploadedUrl');
+
+    // 3. 使用 gal 將照片存入手機的公開相簿 (Gallery)
+    await Gal.putImage(savedPath);
+    debugPrint('takePicture: saved to gallery');
+
+    if (mounted) {
+      // 🎉 以前會跳的綠色框框回來了！
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('相機尚未初始化')),
+        const SnackBar(content: Text('已儲存到圖庫並成功上傳！'), backgroundColor: Colors.green),
       );
-      return;
     }
-    if (_isProcessing) return;
-
-    final wasStreaming = controller.value.isStreamingImages;
-    if (wasStreaming) {
-      await controller.stopImageStream();
+  } catch (e, st) {
+    debugPrint('❌ 拍照或上傳失敗，原因: $e');
+    debugPrint('$st');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('失敗：$e'), backgroundColor: Colors.red),
+      );
     }
-
-    debugPrint('takePicture: start');
-    setState(() => _isProcessing = true);
-
-    try {
-      // 拍下照片
-      final XFile rawFile = await controller.takePicture();
-      debugPrint('takePicture: captured rawFile=${rawFile.path}');
-
-      // 複製到 App 內部資料夾
-      final directory = await getApplicationDocumentsDirectory();
-      final fileName = 'IMG_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedPath = '${directory.path}/$fileName';
-      await File(rawFile.path).copy(savedPath);
-      debugPrint('takePicture: saved local copy at $savedPath');
-
-      if (!mounted) return;
-      context.read<CameraProvider>().addPhoto(savedPath);
-
-      final photoRepo = PhotoRepository();
-      debugPrint('takePicture: uploading file to Firebase');
-      final uploadedUrl = await photoRepo.uploadPhoto(File(savedPath));
-      debugPrint('takePicture: Firebase upload successful: $uploadedUrl');
-
-      // 3. 使用 gal 將照片存入手機的公開相簿 (Gallery)
-      await Gal.putImage(savedPath);
-      debugPrint('takePicture: saved to gallery');
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('已儲存到圖庫，Firebase URL: $uploadedUrl'), backgroundColor: Colors.green),
-        );
-      }
-    } catch (e, st) {
-      debugPrint('takePicture failed: $e');
-      debugPrint('$st');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('拍照或上傳失敗：$e'), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isProcessing = false);
+  } finally {
+    // 💡 修正點 3：拍完、失敗完後，記得把串流開回來，讓生活（Live）繼續
+    if (mounted) {
+      setState(() => _isProcessing = false);
+      _startImageStream(); 
     }
   }
+}
 
   void _showReasoningLogDialog() {
     showDialog(

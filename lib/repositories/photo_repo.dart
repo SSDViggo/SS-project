@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/foundation.dart';
-// ⭐️ 修正 1：正確的官方 auth 套件路徑
+// ⭐️ 正確的官方 auth 套件路徑
 import 'package:firebase_auth/firebase_auth.dart'; 
 
 /// 一筆照片紀錄：Storage上的圖片URL + 拍攝/編輯時的AI調色參數
@@ -52,10 +52,14 @@ class PhotoRepository {
     // 實體圖片存在 Storage 的專屬資料夾
     final storageRef = _storage.ref().child('photo-assistant/users/$uid/$fileName');
     
-    await storageRef.putFile(imageFile);
+    // 💡 🔥 核心修正：在這裡加上 SettableMetadata，餵飽 Android 底層，防止 NullPointerException 卡死
+    await storageRef.putFile(
+      imageFile,
+      SettableMetadata(contentType: 'image/jpeg'),
+    );
+    
     final downloadUrl = await storageRef.getDownloadURL();
 
-    // ⭐️ 修正 2：將 _firestore 統一改為 _db
     // 將資料庫紀錄寫入統一的 'photos' collection
     await _db.collection('photos').add({
       'url': downloadUrl,
@@ -69,7 +73,6 @@ class PhotoRepository {
   Future<void> deletePhoto(String photoId) async {
     debugPrint('deletePhoto: start deleting photoId=$photoId');
     try {
-      // ⭐️ 修正 3：統一資料庫路徑，不再使用舊版的 _collection 與 demo_user
       final docRef = _db.collection('photos').doc(photoId);
       final docSnapshot = await docRef.get();
       
@@ -79,7 +82,7 @@ class PhotoRepository {
 
       final data = docSnapshot.data();
       
-      // ⭐️ 新增防護機制：確保使用者只能刪除自己的照片
+      // 確保使用者只能刪除自己的照片
       if (data?['userId'] != _uid) {
         throw Exception('無權刪除此照片');
       }
@@ -111,13 +114,11 @@ class PhotoRepository {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return Stream.value([]); // 沒登入就回傳空陣列
 
-    // ⭐️ 修正 2：統一使用 _db
     return _db
         .collection('photos')
         .where('userId', isEqualTo: uid) 
         .orderBy('createdAt', descending: true)
         .snapshots()
-        // ⭐️ 修正 4：直接使用寫好的 PhotoRecord.fromDoc 來轉換，程式碼更乾淨
         .map((snapshot) => snapshot.docs.map((doc) => PhotoRecord.fromDoc(doc)).toList());
   }
 }
